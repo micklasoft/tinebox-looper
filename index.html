@@ -45,6 +45,7 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 .chips{grid-column:1/3;display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;font-size:13px}
 .chip{border:1px solid #2C353B;border-radius:999px;padding:1px 8px;color:var(--scr-dim)}
 .chip.on{color:var(--scr-ink);border-color:var(--scr-ink)}
+.chip.rec{color:#fff;background:#C93A3A;border-color:#C93A3A}
 .chip.bad{color:#ff8a7e;border-color:#ff8a7e}
 
 /* tabs */
@@ -480,28 +481,37 @@ Catcher.prototype.refine=function(n,prev){ const f0=mtof(this.mLo+n), h=Math.max
 // bends only past 15 cents, in full past 40: what the tracker reads off a steady note (a few cents) does not detune the synth
 const bendOf=c=>{ const a=Math.abs(c); if(a<=15) return 0; const w=a>=40?1:(a-15)/25; return c*w*w*(3-2*w)/100; };
 
-// "Teach it your guitar": single notes, one at a time; the median harmonic shape 0.1 to 0.3 s after each attack
-function learnProf(x,sr){ const dec=new Decim(sr,12000), y=new Float32Array(Math.ceil(x.length/dec.D)+8), ny=dec.run(x,x.length,y,0), s2=dec.sr, N=2048, H=16;
-  const on=onsets(y.subarray(0,ny),s2), C=new Catcher(s2), acc=Array.from({length:H},()=>[]), used=[];
-  // which note: the tracker's loudest at 0.12 s, alone (nothing else above 25 % of it outside its harmonics)
-  let fi=0; const fr=[]; for(let e=C.hop;e<=ny;e+=C.hop){ const r=C.frame(y,e); fr.push([e/s2,r.notes.map(n=>[n.m,n.a])]); }
-  for(let i=0;i<on.length;i++){ const t=on[i].t, nx=i+1<on.length?on[i+1].t:1e9; if(nx-t<0.35) continue; const f=fr.find(q=>q[0]>=t+0.12); if(!f||!f[1].length) continue;
-    const ns=f[1].slice().sort((p,q)=>q[1]-p[1]), top=ns[0]; if(ns.some(q=>q!==top&&q[1]>0.25*top[1]&&![12,19,24,28,31].includes(q[0]-top[0]))) continue;
+// "Teach it your guitar": single notes, one at a time; the median harmonic shape 0.1 to 0.3 s after each attack.
+// Build 8: each note's own pitch is found first (the strongest of its first two harmonics, to a tenth of a bin) and each harmonic is
+// looked for around that pitch, wider the higher it is. Build 7 looked within 2 bins of the equal-tempered pitch, so a guitar a little
+// off A440 lost its upper harmonics (17 Nov: 1, 0.99, then 0.25, 0.1, 0.05: far darker than a guitar). A shape still that dark is
+// mixed half and half with the general one. Accepts a note when nothing else is above 35 % of it (was 25 %).
+function learnProf(x,sr,lo){ const dec=new Decim(sr,12000), y=new Float32Array(Math.ceil(x.length/dec.D)+8), ny=dec.run(x,x.length,y,0), s2=dec.sr, N=2048, H=16, df=s2/N;
+  const on=onsets(y.subarray(0,ny),s2), C=new Catcher(s2,{mLo:lo||40}), acc=Array.from({length:H},()=>[]), used=[], fr=[];
+  for(let e=C.hop;e<=ny;e+=C.hop){ const r=C.frame(y,e); fr.push([e/s2,r.notes.map(n=>[n.m,n.a])]); }
+  const mag=(re,im,k)=>Math.hypot(re[k],im[k]), peak=(re,im,f,w)=>{ const k0=f/df; let b=-1,bv=0; for(let k=Math.max(1,Math.floor(k0-w));k<=Math.min(N/2-2,Math.ceil(k0+w));k++){ const v=mag(re,im,k); if(v>bv){ bv=v; b=k; } }
+    if(b<1) return {f,a:0}; const a=Math.log(mag(re,im,b-1)+1e-12), c=Math.log(bv+1e-12), d=Math.log(mag(re,im,b+1)+1e-12), p=0.5*(a-d)/(a-2*c+d||1e-9); return {f:(b+Math.max(-0.5,Math.min(0.5,p)))*df,a:bv}; };
+  for(let i=0;i<on.length;i++){ const t=on[i].t, nx=i+1<on.length?on[i+1].t:1e9; if(nx-t<0.3) continue; const f=fr.find(q=>q[0]>=t+0.12); if(!f||!f[1].length) continue;
+    const ns=f[1].slice().sort((p,q)=>q[1]-p[1]), top=ns[0]; if(ns.some(q=>q!==top&&q[1]>0.35*top[1]&&![12,19,24,28,31].includes(q[0]-top[0]))) continue;
     const i0=Math.round((t+0.1)*s2); if(i0+N>ny) continue; const re=new Float64Array(N), im=new Float64Array(N); for(let k=0;k<N;k++) re[k]=y[i0+k]*(0.5-0.5*Math.cos(TAU*k/N)); fft(re,im);
-    const f0=mtof(top[0]), amp=[]; for(let h=1;h<=H;h++){ const fh=h*f0*Math.sqrt(1+0.00012*h*h); if(fh>5500) break; const k0=Math.round(fh*N/s2); let b=0; for(let k=k0-2;k<=k0+2;k++) b=Math.max(b,Math.hypot(re[k],im[k])); amp.push(b); }
+    const fe=mtof(top[0]), w=Math.max(2,fe*0.035/df), p1=peak(re,im,fe,w), p2=peak(re,im,2*fe,2*w), f0=p1.a>=p2.a?p1.f:p2.f/2, amp=[];
+    for(let h=1;h<=H;h++){ const fh=h*f0*Math.sqrt((1+0.00012*h*h)/1.00012); if(fh>5500) break; amp.push(peak(re,im,fh,2+h*f0*0.004/df).a); }
     const mx=Math.max(...amp); if(!(mx>0)) continue; amp.forEach((a,h)=>acc[h].push(a/mx)); used.push(top[0]); }
   const med=a=>{ const s=a.slice().sort((p,q)=>p-q); return s.length?s[s.length>>1]:0; };
   if(used.length<6) return {prof:null,notes:used};
-  const prof=acc.map(a=>Math.round(med(a)*1000)/1000); let n=prof.length; while(n>4&&!prof[n-1]) n--; return {prof:prof.slice(0,n),notes:used}; }
+  let prof=acc.map(a=>med(a)); let n=prof.length; while(n>4&&!prof[n-1]) n--; prof=prof.slice(0,n);
+  const gen=h=>1/(1+Math.pow(h/3.2,2)), upper=prof.slice(2,8).reduce((t,v)=>t+v,0), dark=upper<0.6;
+  if(dark) prof=prof.map((v,h)=>0.5*v+0.5*gen(h));
+  return {prof:prof.map(v=>Math.round(v*1000)/1000),notes:used,dark}; }
 
 // ------------------------------------------------------------------ offline: the same tracker over a whole take
 // The frames run in time order as live, then each note is moved back by the tracker's delay (the window's lean plus the frames that
 // confirm a note) and onto the attack just before it. A note struck again while it rings splits in two.
 function transcribe(x,sr,o){ o=o||{}; const dec=new Decim(sr,12000), y=new Float32Array(Math.ceil(x.length/dec.D)+8), ny=dec.run(x,x.length,y,0), s2=dec.sr;
-  const C=new Catcher(s2,Object.assign({prof:o.prof},o.cat)), hop=C.hop, dt=hop/s2, lag=o.lag==null?0.016:o.lag, nf=Math.floor(ny/hop), run={}, segs=[]; let gmax=0;
+  const C=new Catcher(s2,Object.assign({prof:o.prof,mLo:o.lo||40},o.cat)), hop=C.hop, dt=hop/s2, lag=o.lag==null?0.016:o.lag, nf=Math.floor(ny/hop), run={}, segs=[]; let gmax=0;
   // a second, finer look (85 ms windows, centred): what the short windows cannot tell apart low down (a chord's common sub-harmonic,
   // a note a third away) it can. A note it hardly sees is dropped. Offline only: it needs 40 ms more of the future.
-  const C2=o.fine===false?null:new Catcher(s2,Object.assign({prof:o.prof,NL:1024,fx:500,skew:0.5,keepH:true},o.cat2)), E2=[], X2=[];
+  const C2=o.fine===false?null:new Catcher(s2,Object.assign({prof:o.prof,NL:1024,fx:500,skew:0.5,keepH:true,mLo:o.lo||40},o.cat2)), E2=[], X2=[];
   for(let i=0;i<nf;i++){ const r=C.frame(y,(i+1)*hop), seen={}; if(C2){ const r2=C2.frame(y,(i+1)*hop); E2.push(Float32Array.from(r2.h)); X2.push(r2.mx||1e-9); }
     for(const n of r.notes){ seen[n.m]=1; if(n.a>gmax) gmax=n.a; let s=run[n.m]; if(s&&n.re&&i-s.i0>8){ segs.push(s); s=null; } if(!s) s=run[n.m]={m:n.m,i0:i,A:[],F:[],R:[]}; s.A.push(n.a); s.R.push(n.a/(r.mx||1e-9)); s.F.push(n.m+n.c/100); s.i1=i; }
     for(const m in run) if(!seen[m]){ segs.push(run[m]); delete run[m]; } }
@@ -550,7 +560,7 @@ Space.prototype.run=function(y,o,n,mix){ if(!(mix>0)) return; const cb=this.cb, 
 // neighbour keeps its voice. Up to 6 notes (6 strings).
 // A second, finer tracker (85 ms windows) runs every other frame, in the audio block after the first one's, and checks each voice
 // from 43 ms on: a voice it hardly sees (a chord's common sub-harmonic, a note a third away) fades out within 30 ms.
-function Live(sr,o){ o=o||{}; this.sr=sr; this.dec=new Decim(sr,12000); this.prof=o.prof||null; this.mk(); this.N=1024; this.hop=this.C.hop; this.vr=o.verify==null?0.2:o.verify; this.k2=0; this.due=false;
+function Live(sr,o){ o=o||{}; this.sr=sr; this.dec=new Decim(sr,12000); this.prof=o.prof||null; this.lo=o.lo||40; this.it1=o.it1; this.it2=o.it2; this.every=o.every||4; this.mk(); this.N=1024; this.hop=this.C.hop; this.vr=o.verify==null?0.2:o.verify; this.k2=0; this.due=false;
   this.buf=new Float32Array(this.N*3); this.nb=0; this.since=0; this.tmp=new Float32Array(4096);
   this.V=[]; this.map={}; this.held={}; this.pk=1e-3; this.gain=o.gain==null?1:o.gain; this.vg=1; this.lg=1; this.lim=0.5; this.sp=new Space(sr); this.room=o.room==null?1:o.room;
   this.pc=new Float64Array(12); this.kf=0; this.key=o.key||null; this.keyFix=!!o.key; this.bend=o.bend!==false; this.add=o.add||''; this.log=null; this.floor=o.floor||0.04; this.slide=o.slide!==false;
@@ -560,13 +570,16 @@ function Live(sr,o){ o=o||{}; this.sr=sr; this.dec=new Decim(sr,12000); this.pro
   // following their level (build 6 silenced everything, which cut quiet tails short).
   this.bleed=o.bleed==null?0.02:o.bleed; this.dly=o.dly==null?0.07:o.dly; this.oq=new Float32Array(64); this.oi=0; this.bs=0; this.bn=Math.max(1,Math.round(sr*0.01)); this.bp=0; this.inPk=0; this.gated=false; }
 Live.prototype.set=function(p,oct){ this.P=Object.assign({},PRESETS[p]||PRESETS.pad); this.oct=(this.P.oct||0)+(oct||0); this.V.forEach(v=>v.off()); this.V=[]; this.map={}; this.held={}; };
-Live.prototype.mk=function(){ this.C=new Catcher(this.dec.sr,{prof:this.prof}); this.C2=new Catcher(this.dec.sr,{prof:this.prof,NL:1024,fx:500,skew:0.5,keepH:true}); };
-Live.prototype.opts=function(d){ if('add' in d) this.add=d.add||''; if('bend' in d) this.bend=!!d.bend; if('room' in d) this.room=d.room; if('key' in d){ this.key=d.key||null; this.keyFix=!!d.key; } if(d.prof!==undefined){ this.prof=d.prof; this.mk(); } };
+// build 8: lighter on the audio thread (17 Nov on the phone at 96 kHz: the input's delay jumped 69 ms while the live synth ran, and an
+// audio thread falling behind is the likely cause): 8 updates a frame instead of 12 (each frame starts from the last), the check 6
+// updates every 4th frame. The lowest note follows the tuning (E2, or D2 for drop D).
+Live.prototype.mk=function(){ const lo=this.lo||40; this.C=new Catcher(this.dec.sr,{prof:this.prof,it:this.it1||8,mLo:lo}); this.C2=new Catcher(this.dec.sr,{prof:this.prof,NL:1024,fx:500,skew:0.5,keepH:true,it:this.it2||6,mLo:lo}); };
+Live.prototype.opts=function(d){ if('add' in d) this.add=d.add||''; if('bend' in d) this.bend=!!d.bend; if('room' in d) this.room=d.room; if('key' in d){ this.key=d.key||null; this.keyFix=!!d.key; } if(d.prof!==undefined||(d.lo&&d.lo!==this.lo)){ if(d.prof!==undefined) this.prof=d.prof; if(d.lo) this.lo=d.lo; this.mk(); } };
 Live.prototype.feed=function(x,n,out){ const k=this.dec.run(x,n,this.tmp,0), N=this.N;
   for(let i=0;i<n;i++){ const a=x[i]<0?-x[i]:x[i]; if(a>this.inPk) this.inPk=a; }
   if(this.nb+k>this.buf.length){ const keep=N+this.hop; this.buf.copyWithin(0,this.nb-keep,this.nb); this.nb=keep; }
   this.buf.set(this.tmp.subarray(0,k),this.nb); this.nb+=k; this.since+=k;
-  let ran=false; while(this.since>=this.hop&&this.nb>=N){ this.since-=this.hop; const echo=this.bleed*this.echoPk(), r=this.C.frame(this.buf,this.nb-this.since); this.gated=this.inPk<3*echo; this.inPk=0; this.step(r); ran=true; if(++this.k2>=2){ this.k2=0; this.due=true; } }
+  let ran=false; while(this.since>=this.hop&&this.nb>=N){ this.since-=this.hop; const echo=this.bleed*this.echoPk(), r=this.C.frame(this.buf,this.nb-this.since); this.gated=this.inPk<3*echo; this.inPk=0; this.step(r); ran=true; if(++this.k2>=this.every){ this.k2=0; this.due=true; } }
   if(!ran&&this.due&&this.nb>=N){ this.due=false; this.check(this.C2.frame(this.buf,this.nb)); }
   const nv=this.V.length, want=1/Math.sqrt(Math.max(1,nv)); this.vg+=(want-this.vg)*(want<this.vg?0.5:0.05);
   for(let i=0;i<n;i++) out[i]=0; for(const v of this.V) v.render(out,0,n,this.P.gain*this.gain*this.vg);
@@ -580,7 +593,7 @@ Live.prototype.feed=function(x,n,out){ const k=this.dec.run(x,n,this.tmp,0), N=t
 Live.prototype.echoPk=function(){ const a=Math.round((this.dly-0.03)/0.01), b=Math.round((this.dly+0.03)/0.01); let m=0; for(let j=Math.max(1,a);j<=Math.min(63,b);j++){ const v=this.oq[(this.oi-j)&63]; if(v>m) m=v; } return m; };
 Live.prototype.check=function(r){ const h=r.h, mx=r.mx||1e-9, lo=this.C2.mLo;
   for(const key in this.map){ const v=this.map[key]; if(v.age<8||!v.n1) continue; const k=v.mn-lo; if(k<0||k>=h.length) continue; v.q2+=h[k]/mx; v.n2++;
-    if(v.n2>=4&&v.q2/v.n2<this.vr*v.q1/v.n1){ v.kill(); delete this.map[key]; this.held[key]=1; } } };
+    if(v.n2>=2&&v.q2/v.n2<this.vr*v.q1/v.n1){ v.kill(); delete this.map[key]; this.held[key]=1; } } };
 Live.prototype.voice=function(nt,f,lv){ if(this.V.length>=8){ const o=this.V.shift(); o.off(); for(const k in this.map) if(this.map[k]===o) delete this.map[k]; }
   const v=new Voice(this.sr,this.P), iv=addIv(nt.m,this.add,this.key); v.sub=this.add==='sub'?0.7:0; v.on(f,Math.sqrt(lv),iv?Math.pow(2,iv/12):0); this.V.push(v); return v; };
 Live.prototype.step=function(r){ const P=this.P; let mx=0; for(const nt of r.notes) if(nt.a>mx) mx=nt.a; this.pk=Math.max(mx,this.pk*0.9995);
@@ -614,7 +627,7 @@ return {fft,Decim,Tracker,Catcher,onsets,transcribe,transcribeK,tidy,learnProf,k
    While you play, the TP-7 stands still and armed: the guitar then reaches the app over USB (8 Oct) and nothing records.
    Build 2 (8 Nov, your report of build 1): in edit mode, armed on line 1, you heard your guitar and the app heard it, but you did not
    hear the app. The stance is now normal mode, armed (record sources line 1, USB 1, USB 2), unless the diagnostics find otherwise. */
-const APP_BUILD='7 (17 Nov 2026)';
+const APP_BUILD='11 (17 Nov 2026)';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -628,11 +641,15 @@ const G=GDSP();
 // ------------------------------------------------------------------ settings and the session (audio itself lives in IndexedDB)
 const LS='tinebox-loop-1';
 function defaults(){ return {v:1,metroOn:true,lv:{metro:0.8,pads:0.9,loop:1,prev:0.8},kit:'studio',padFix:null,quant:0,
-  synth:{preset:'pad',oct:0,preview:true,snap:false,glide:true,level:0.8,add:'',room:true,prof:null,profN:0},printOnStop:true,autoAccept:false,src:'gtr',sndPrev:true,
+  synth:{preset:'pad',oct:0,preview:true,snap:false,glide:true,level:0.8,add:'',room:true,prof:null,profN:0,low:40},printOnStop:true,autoAccept:true,mode:'capture',len:0,src:'gtr',sndPrev:true,
   // marker delay 79 ms and loop out −19 ms from Tinebox (5 Oct, 31 Oct); MIDI offset per audio setup (14 Oct: 10 ms at 48 kHz/1 ch, 4 ms at 96 kHz/6 ch)
   tp:{mDelay:79,loopAdj:-19,offsets:{'48 kHz, 1 ch':10,'96 kHz, 6 ch':4},rt:{},printFix:0,stance:'normal',lag:{}},diag:{},ses:null}; }
 let S=defaults();
-try{ const j=JSON.parse(localStorage.getItem(LS)||'null'); if(j&&j.v===1){ S=Object.assign(defaults(),j); S.tp=Object.assign(defaults().tp,j.tp||{}); S.synth=Object.assign(defaults().synth,j.synth||{}); S.lv=Object.assign(defaults().lv,j.lv||{}); } }catch(e){}
+try{ const j=JSON.parse(localStorage.getItem(LS)||'null'); if(j&&j.v===1){ S=Object.assign(defaults(),j); S.tp=Object.assign(defaults().tp,j.tp||{}); S.synth=Object.assign(defaults().synth,j.synth||{}); S.lv=Object.assign(defaults().lv,j.lv||{});
+  // build 8: test 2 on 17 Nov found the TP-7 loop 14.7 ms short with the -19 ms loop-out correction; test 2 now learns it each run
+  if(S.tp.loopAdj===-19&&!S.tp.loopLearnt) S.tp.loopAdj=-4.3;
+  // build 11: every layer kept (switch 6 undoes), the TP-7 recording as you play
+  if(!j.b11){ S.autoAccept=true; S.mode='capture'; } S.b11=true; } }catch(e){}
 let saveT=null; function save(){ clearTimeout(saveT); saveT=setTimeout(saveNow,300); }
 function saveNow(){ clearTimeout(saveT); try{ localStorage.setItem(LS,JSON.stringify(S,(k,v)=>k.startsWith('_')?undefined:v)); }catch(e){} }
 window.addEventListener('pagehide',saveNow);
@@ -664,9 +681,9 @@ function initAudio(){
   A.mon=g(1); A.mon.connect(A.master);                 // what you hear while you play; silent while the app prints to the TP-7
   A.loop=g(S.lv.loop); A.loop.connect(A.mon); A.metro=g(S.lv.metro); A.metro.connect(A.mon); A.count=g(0.8); A.count.connect(A.mon);
   A.pads=g(S.lv.pads); A.pads.connect(A.mon); A.prev=g(S.lv.prev); A.prev.connect(A.mon);
-  A.print=g(1); A.print.connect(A.master); A.test=g(1); A.test.connect(A.master);
+  A.print=g(1); A.print.connect(A.master); A.test=g(1); A.test.connect(A.master); setTimeout(()=>{ try{ cleanBus(); }catch(e){} },0);
   const nb=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate), d=nb.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1; A.noise=nb;
-  knockTemplates().catch(e=>log('err','knock templates: '+e));
+  knockTemplates().catch(e=>log('err','knock templates: '+e)); setTimeout(()=>{ try{ watchStart(); }catch(e){} },0);
   setInterval(tick,25);
   log('app',`audio ${ctx.sampleRate} Hz, ${ctx.destination.maxChannelCount} output channels, base latency ${msTxt(ctx.baseLatency)}, output latency ${msTxt(ctx.outputLatency)}`);
   ctx.onstatechange=()=>log('app',`audio ${ctx.state}`);
@@ -748,10 +765,10 @@ async function openInput(){
 function preview(on,force){ const s=S.synth; if(!IN.node) return; on=on&&(force||s.preview);
   const bleed=S.tp.bleed!=null?S.tp.bleed:0.02, dly=RT();
   // build 7: the added note, bends, room, the loop's key (once a synth layer has one) and the learnt profile (sent when it changes)
-  const key=liveKey(), opts={add:s.add||'',bend:!!s.glide,room:s.room===false?0:1,key};
+  const key=liveKey(), opts={add:s.add||'',bend:!!s.glide,room:s.room===false?0:1,key,lo:s.low||40};
   const pj=JSON.stringify(s.prof||null); if(pj!==IN.profSent){ opts.prof=s.prof||null; IN.profSent=pj; }
   if(IN.kind==='worklet') IN.node.port.postMessage({preview:on,preset:s.preset,oct:s.oct,gain:1,bleed,dly,opts});
-  else { IN.pv=on; if(on){ if(!IN.live) IN.live=new G.Live(ctx.sampleRate,{preset:s.preset,oct:s.oct}); else IN.live.set(s.preset,s.oct); IN.live.bleed=bleed; IN.live.dly=dly; IN.live.opts(opts); } } }
+  else { IN.pv=on; if(on){ if(!IN.live) IN.live=new G.Live(ctx.sampleRate,{preset:s.preset,oct:s.oct,lo:s.low||40}); else IN.live.set(s.preset,s.oct); IN.live.bleed=bleed; IN.live.dly=dly; IN.live.opts(opts); } } }
 // the key of the section's synth layers, if any has one ("A:minor" → {tonic, mode})
 function liveKey(){ const ses=S.ses; if(!ses) return null; const sec=ses.secs[ses.cur]; const l=sec&&sec.layers.find(x=>x.type==='syn'&&x.key); if(!l) return null; const [t,m]=l.key.split(':'); return {tonic:+t,mode:m}; }
 // what the input heard over graph-time span [a, b), as arrival times (no round-trip shift); null if not all there yet or gone
@@ -877,7 +894,10 @@ async function sxAlive(){ const r=await sxAsk(0x01,[],900); return r?(/mode:([a-
 async function tpRead(op){ const r=await sxAsk(0x7F,[op],500); return r&&!r.st&&r.v.length>=2?r.v[1]:null; }
 const tpEditRead=()=>tpRead(0x0b); // ff = not in edit mode, otherwise the selected track (25 Oct)
 async function tpSetEdit(on){ const v=await tpEditRead(); if(v!=null&&(v!==0xff)===on) return {sent:false,after:v};
-  mNow([0xB0,14,0]); mNow(sxMsg(SXOP.edit)); await sleep(700); return {sent:true,after:await tpEditRead()}; }
+  // build 10: asks every 60 ms from 200 ms on instead of waiting 700 ms, and logs how long the TP-7 took (to learn its real time)
+  mNow([0xB0,14,0]); mNow(sxMsg(SXOP.edit)); const t0=performance.now(); await sleep(200); let a=null;
+  for(let i=0;i<12;i++){ a=await tpEditRead(); if(a!=null&&(a!==0xff)===on) break; await sleep(60); }
+  const ok=a!=null&&(a!==0xff)===on; if(ok) await sleep(80); log('st',`edit mode ${on?'on':'off'}: ${ok?'':'not seen after '}${Math.round(performance.now()-t0)} ms`); return {sent:true,after:a}; }
 async function tpSel(track,input){ const a=await sxAsk(0x7F,[0x09,track],400); if(!(a&&!a.st)) return false; const b=await sxAsk(0x7F,[0x0a,input],400); if(!(b&&!b.st)) return false; TP.trk=track; TP.inp=input; return true; }
 // track first, input once the track took (31 Oct: a refused track change put the input on the wrong track); wait for armed = 0 first
 async function tpSelSafe(track,input){ if(TP.arm&&TP.arm.v===1){ TP.perf=false; mNow([0xB0,14,0]); } await waitFor(()=>!TP.arm||TP.arm.v===0,600,10);
@@ -901,7 +921,10 @@ async function tpCue(n){ mNow([0xB0,17,0]); mNow([0x90,n,100]); await sleep(90);
 // Normal mode, armed with record sources line 1, USB 1 and USB 2 should give both: the guitar reached the app while armed in normal
 // mode (8 Oct), and you heard Tinebox while recording line 1 (build 42 test 15). Test 1 checks it; S.tp.stance keeps what it found.
 // Never Play in this stance: in normal mode that makes a new recording (printing checks the loaded file first).
-async function tpPerform(){ const e=tpProblem(); if(e) return e; tpRelease(); mNow([0xB0,17,0]); mNow(sxMsg(SXOP.stop)); await sleep(120);
+// build 9: the TP-7's line 1 gain, 0 to 42 dB, by CC 9 on channel 1 (Tinebox, 14 Oct: 10 and 30 dB sent showed +9 and +29 dB).
+// A guitar straight into the TP-7 came in near -30 dBFS at the gain it had (17 Nov); with the Mustang Micro before it, near -9.
+function tpGain(db){ if(db==null) return; db=Math.max(0,Math.min(42,Math.round(db))); S.tp.gain=db; save(); if(!R.midi||!R.outId) return; mNow([0xB0,9,Math.min(127,Math.ceil(db*128/42))]); log('st',`TP-7 input gain set to ${db} dB`); }
+async function tpPerform(){ const e=tpProblem(); if(e) return e; if(S.tp.gain!=null) tpGain(S.tp.gain); tpRelease(); mNow([0xB0,17,0]); mNow(sxMsg(SXOP.stop)); await sleep(120);
   if(S.tp.stance==='edit'){ const r=await tpEditTo(0,TPIN.line1); if(r) return r; }
   else { const ed=await tpSetEdit(false); if(ed.after==null) return 'The TP-7 does not answer.'; if(ed.after!==0xff) return 'Edit mode did not go off.'; }
   if(!(await tpArm(true))) return 'The TP-7 did not report armed.'; TP.perf=true; TP.stance=S.tp.stance; return ''; }
@@ -983,28 +1006,36 @@ async function prepSession(bpm,tapZ){ const e=tpProblem(); if(e){ say(e); return
   const gone=()=>G0!==E.gen, fail=m=>{ if(!gone()){ E.st=S.ses&&S.ses.secs.length?'stopped':'idle'; say(m); } log('err',m); return m; };
   if(!(await tpAlive())) return fail('The TP-7 does not answer over MIDI. Check the cable, then Settings, Connect.');
   if(!(await openInput())) return fail('No audio input: the app cannot hear the guitar.');
+  // build 11, capture: no recording to make first (the first loop or Play starts one), so only the stance and the round trip
+  if(capOn()){ let rt={rt:S.tp.rt[setupKey()]!=null?S.tp.rt[setupKey()]:null,stored:true}, r;
+    if(rt.rt==null){ say('New session: measuring the round trip (the first time on this audio setup)…'); await tpUnperform(); r=await tpEditTo(0,TPIN.usb1); if(r) return fail(r); await tpToStart(); await tpArm(true);
+      rt=await measureRT(); await tpArm(false); if(gone()) return; if(rt.rt!=null) S.tp.rt[setupKey()]=rt.rt; else log('err',`round trip not measured (${rt.why})`); }
+    r=await tpPerform(); if(r) return fail(r); if(gone()) return;
+    S.ses={id:uid(),bpm:Math.round(bpm*10)/10,created:Date.now(),file:null,fileEnd:0,cues:{},secs:[],cur:0,rt:rt.rt!=null?rt.rt:RT(),capture:true,caps:[]}; save(); E.rtOK=null;
+    E.bufs.clear(); E.raws.clear(); E.st='ready'; clkStart(tapZ!=null?alignBar(tapZ):clkFirst()); log('st',`session ready (capture): ${S.ses.bpm} bpm, round trip ${msTxt(S.ses.rt)}${rt.stored?' (from the last session)':''}`);
+    say(`Ready at ${S.ses.bpm} bpm.`,`Switch 1 starts a loop${S.len?` of ${S.len} bar${S.len>1?'s':''}`:''}; the TP-7 records from then on. Twice quickly keeps what you just played.`); renderAll(); return; }
   say(`New session at ${Math.round(bpm)} bpm: making a new TP-7 recording…`);
   // 1. half a second in normal mode with the app silent: a new recording with one track per record source (line 1, USB 1, USB 2)
   await tpUnperform(); await tpSetEdit(false); if(gone()) return; if(!(await tpToStart())) return fail('The tape did not go back to the start.');
   // 2 s (build 4): longer than the 1.6 s before section A, so the first print of A plays unarmed to 1.45 s (its timing from the position
   // reports, its cue set on the way) and arms there, as every later section does. The reports also give the start lag here.
   A.master.gain.value=0; let T=ctx.currentTime+0.5; const Pp=audioToPerf(T)+midiOffset(); midiSend([0xB0,14,127],T-0.35); midiSend(sxMsg(SXOP.session),T-0.25); midiSend(sxMsg(SXOP.play),T); midiSend(sxMsg(SXOP.stop),T+2.0); midiSend([0xB0,14,0],T+2.05);
-  await sleepTo(T+2.2); A.master.gain.value=1; const lf=posFit(Pp-50,0); if(lf.n>=3){ (S.tp.lag=S.tp.lag||{}).normal=Math.round(lf.c-Pp); log('st',`start lag (normal mode): ${S.tp.lag.normal} ms`); }
+  await sleepTo(T+2.2); A.master.gain.value=1; const xc=inSlice(T,T+2.15), cpk=xc?G.peakOf(xc):1; const lf=posFit(Pp-50,0); if(lf.n>=3){ (S.tp.lag=S.tp.lag||{}).normal=Math.round(lf.c-Pp); log('st',`start lag (normal mode): ${S.tp.lag.normal} ms`); }
   await sleep(400); if(gone()) return; const f=await tpFileNow(); if(gone()) return;
-  // 2. those 2 s recorded the guitar on track 1 too: wipe them (input erase, armed over the first 2.3 s)
-  say('New session: wiping track 1 at the start…'); let r=await tpEditTo(0,TPIN.erase); if(r) return fail(r); if(!(await tpToStart())) return fail('The tape did not go back to the start.');
-  T=ctx.currentTime+0.4; midiSend([0xB0,14,127],T-0.3); midiSend(sxMsg(SXOP.play),T); midiSend([0xB0,14,0],T+2.3); midiSend(sxMsg(SXOP.stop),T+2.36); await sleepTo(T+2.7); if(gone()) return;
-  // 3. the round trip: track 1 from USB 1, armed while standing, four clicks out and back in
-  say('New session: measuring the round trip…'); r=await tpEditTo(0,TPIN.usb1); if(r) return fail(r); await tpToStart(); await tpArm(true);
-  const rt=await measureRT(); await tpArm(false); if(gone()) return;
-  if(rt.rt!=null){ S.tp.rt[setupKey()]=rt.rt; } else log('err',`round trip not measured (${rt.why})`);
+  // build 10 (17 Nov: waiting before a new session): the wipe only if the guitar played into those 2 s (the app hears line 1 while the
+  // TP-7 records it), and then with the first print, which goes into edit mode anyway. The round trip from the last session on
+  // this audio setup: the metronome's echo checks it from the first take on (build 8). Measured only the first time on a setup.
+  const wipe=cpk>0.006; log('st',`creation pass: line 1 peaked at ${dB(cpk)}${wipe?': track 1 wiped with the first print':', nothing to wipe'}`);
+  let rt={rt:S.tp.rt[setupKey()]!=null?S.tp.rt[setupKey()]:null,why:'',stored:true}, r;
+  if(rt.rt==null){ say('New session: measuring the round trip (the first time on this audio setup)…'); r=await tpEditTo(0,TPIN.usb1); if(r) return fail(r); await tpToStart(); await tpArm(true);
+    rt=await measureRT(); await tpArm(false); if(gone()) return; if(rt.rt!=null){ S.tp.rt[setupKey()]=rt.rt; } else log('err',`round trip not measured (${rt.why})`); }
   // 4. the performance stance: track 1, line 1, armed, standing
   r=await tpPerform(); if(r) return fail(r); if(gone()) return;
-  S.ses={id:uid(),bpm:Math.round(bpm*10)/10,created:Date.now(),file:f,fileEnd:f?f.frames/Math.max(1,f.sr):2.0,cues:{},secs:[],cur:0,rt:rt.rt!=null?rt.rt:RT()}; save();
+  S.ses={id:uid(),bpm:Math.round(bpm*10)/10,created:Date.now(),file:f,fileEnd:f?f.frames/Math.max(1,f.sr):2.0,cues:{},secs:[],cur:0,rt:rt.rt!=null?rt.rt:RT(),wipe}; save(); E.rtOK=null;
   E.bufs.clear(); E.raws.clear(); E.st='ready';
   const w=[]; if(!f) w.push('The TP-7 sent no file notice.'); else if(f.b9<3) w.push(`The new recording has ${f.b9} track${f.b9>1?'s':''}: set the TP-7's record sources to line 1, USB 1 and USB 2 once.`);
   if(rt.rt==null) w.push(`Round trip not measured (${rt.why}); takes may sit off the beat.`);
-  clkStart(tapZ!=null?alignBar(tapZ):clkFirst()); log('st',`session ready: ${S.ses.bpm} bpm, ${fileTxt(f)}, round trip ${msTxt(S.ses.rt)}`);
+  clkStart(tapZ!=null?alignBar(tapZ):clkFirst()); log('st',`session ready: ${S.ses.bpm} bpm, ${fileTxt(f)}, round trip ${msTxt(S.ses.rt)}${rt.stored?' (from the last session; the metronome echo checks it)':''}`);
   say(`Ready at ${S.ses.bpm} bpm.`,`${w.join(' ')} Switch 1 records a loop: guitar, pads or both. Round trip ${msTxt(S.ses.rt)}.`); renderAll(); }
 const clkFirst=()=>ctx.currentTime+0.1;
 // clicks out through USB 1, back through the TP-7's track 1 monitor: graph time out → graph time in
@@ -1027,7 +1058,7 @@ async function measureRT(){ const n=5, base=ctx.currentTime+0.2, step=0.3, sr=ct
 const gtrType=()=>S.src==='syn'?'syn':'gtr';
 const srcName=()=>S.src==='syn'?`${(G.PRESETS[S.synth.preset]||{name:'synth'}).name} synth`:'raw guitar';
 // the live synth runs on the Sounds tab (strum to hear the sound) and, if set, while a pass records with the synth chosen
-function prevSync(){ const busy=['printing','tape','prep'].includes(E.st), want=S.src==='syn'&&!!IN.node&&!busy&&((E.tab==='Snd'&&S.sndPrev!==false)||(!!E.rec&&!!S.synth.preview)), key=[S.synth.preset,S.synth.oct,S.synth.add,S.synth.glide,S.synth.room,S.synth.profN,JSON.stringify(liveKey())].join(':');
+function prevSync(){ const busy=['printing','tape','prep'].includes(E.st), want=S.src==='syn'&&!!IN.node&&!busy&&((E.tab==='Snd'&&S.sndPrev!==false)||(!!E.rec&&!!S.synth.preview)), key=[S.synth.preset,S.synth.oct,S.synth.add,S.synth.glide,S.synth.room,S.synth.profN,S.synth.low,JSON.stringify(liveKey())].join(':');
   if(want!==!!E.pv||(want&&key!==E.pvKey)){ E.pv=want; E.pvKey=key; preview(want,true); } }
 // "Teach it your guitar" (build 7): sec seconds of what comes in, from now; the harmonic shape of your guitar from its single notes
 async function capture(sec,tick){ if(!(await openInput())) return {err:'no audio input'}; const t0=ctx.currentTime+0.05;
@@ -1036,14 +1067,15 @@ async function capture(sec,tick){ if(!(await openInput())) return {err:'no audio
 async function teach(){ if(E.teach) return; E.teach=true; renderAll();
   const r=await capture(15,i=>{ say('Teach it your guitar: single notes, one at a time, each ringing half a second. Low to high, all six strings.',`${i} s left`); });
   E.teach=false; if(r.err){ say('Teach: '+r.err+'.'); renderAll(); return; }
-  const L=G.learnProf(r.x,r.sr); if(!L.prof){ say(`Teach: ${L.notes.length} clear single note${L.notes.length===1?'':'s'}; it needs 6. Play single notes with a little space between them.`); renderAll(); return; }
+  const L=G.learnProf(r.x,r.sr,S.synth.low||40); if(!L.prof){ say(`Teach: ${L.notes.length} clear single note${L.notes.length===1?'':'s'}; it needs 6. Play single notes with a little space between them.`); renderAll(); return; }
   S.synth.prof=L.prof; S.synth.profN=L.notes.length; save(); prevSync(); log('st',`learnt profile from ${L.notes.length} notes: ${JSON.stringify(L.prof)}`);
   say(`Learnt your guitar from ${L.notes.length} notes.`,'The synth now uses it, live and for new layers.'); renderAll(); }
-const gtrFloor=()=>Math.max(0.03,4*(S.tp.bleed!=null?S.tp.bleed:0.005));
+// build 9: -40 dBFS (was -30): a guitar straight into the TP-7 peaked at -29 to -32 dBFS on 17 Nov
+const gtrFloor=()=>Math.max(0.01,4*(S.tp.bleed!=null?S.tp.bleed:0.005));
 const hitsC=h=>h.map(x=>[Math.round(x.ph*1000)/1000,x.i,Math.round((x.v||0.9)*100)/100]);
-function firstStart(S0,via){ E.rec={first:true,S0,via:via||null,hits:[]}; E.st='first'; E.play=null; prevSync();
-  E.capT=at(S0+CAP*barS()-0.3,()=>{ if(E.rec&&E.rec.first&&E.rec.S0===S0) firstClose(S0+CAP*barS()); });
-  say(via==='next'?'Recording a new section: guitar, pads or both. Switch 1 closes it.':'Recording: guitar, pads or both. Switch 1 again closes the loop.',`Your guitar sounds as ${srcName()} (switch 5 swaps).`); renderAll(); }
+function firstStart(S0,via){ E.rec={first:true,S0,via:via||null,hits:[]}; E.st='first'; E.play=null; prevSync(); capStart(via==='next'?'new section':'first loop');
+  const fix=S.len?S.len*barS():0; E.capT=at(S0+(fix||CAP*barS())-(fix?0.005:0.3),()=>{ if(E.rec&&E.rec.first&&E.rec.S0===S0) firstClose(S0+(fix||CAP*barS())); });
+  say(S.len?`Recording ${S.len} bar${S.len>1?'s':''}: guitar, pads or both. It loops by itself.`:via==='next'?'Recording a new section: guitar, pads or both. Switch 1 closes it.':'Recording: guitar, pads or both. Switch 1 again closes the loop.',`Your guitar sounds as ${srcName()} (switch 5 swaps).`); renderAll(); }
 async function firstClose(h,_c,stopAfter){ const r=E.rec; if(!r||!r.first) return; const bar=barS(), base=bpmNow(), raw=h-r.S0;
   if(raw<0.5*bar&&!stopAfter){ say('Too soon to close: tap again at the end of your loop.'); return; }
   clearTimeout(E.capT); const free=!S.loopBars, n=clamp(Math.round(raw/bar),1,CAP), L=free?Math.max(raw,0.25):n*bar, E1=r.S0+L, bpm=free?240*n/L:base;
@@ -1066,7 +1098,7 @@ async function firstClose(h,_c,stopAfter){ const r=E.rec; if(!r||!r.first) retur
     if(P&&x0){ const x=x0.slice(); fadeEdge(x,sr,0.0015,0); layerOnce(P,lg.id,mkBuf(x,N),0,a-r.S0,E1); }
     await sleepTo(takeReadyAt(E1)+0.005); let x=cleanTake(r.S0,E1); if(!x){ log('err','the first pass did not reach the app'); x=new Float32Array(N); }
     fadeEdge(x,sr,0.0015,0.0015); const y=new Float32Array(N); y.set(x.subarray(0,N)); const buf=mkBuf(y,N); E.bufs.set(lg.id,buf);
-    if(gt==='syn'){ E.raws.set(lg.id,{x:y,off:0,N}); IDB.put(S.ses.id+':'+lg.id+':raw',{x:y,off:0,N,sr}); } storeLayer(lg,y,sr);
+    if(gt==='syn'){ E.raws.set(lg.id,{x:y,off:0,N}); IDB.put(S.ses.id+':'+lg.id+':raw',{x:y,off:0,N,sr}); } storeLayer(lg,y,sr); postCheck(lg,r.S0,E1,r.S0);
     if(P&&E.play===P){ if(a<E1) layerOnce(P,lg.id,buf,Math.max(0,a-r.S0),L,E1); layerPlay(P,lg,E1+L); }
     if(gt==='syn') synthLayer(lg,k); renderAll(); })());
   await Promise.all(jobs); save();
@@ -1087,20 +1119,58 @@ function declick(x,h0,sr){ const T=KT; if(!T||T.sr!==sr||!x) return null; const 
   const z=g*Math.sqrt(den)/Math.sqrt(Math.max(1e-20,e1/nw)), cut=1-e1/e0; if(z<6) return {g,d:bd/sr,n:cl.length,cut,z,kept:true};
   for(const c of cl){ const t=tp(c), i0=at(c)+bd; for(let j=0;j<t.length;j++){ const i=i0+j; if(i>=0&&i<x.length) x[i]-=g*t[j]; } }
   return {g,d:bd/sr,n:cl.length,cut,z}; }
-// a take, cut (a, b) in heard time, with the echo out; the round trip corrected if the echo says so
-function cleanTake(a,b){ const sr=ctx.sampleRate; let x=takeSlice(a,b); if(!x) return null; const x1=x.slice(); let r=declick(x,a,sr);
-  if(r&&r.z>=12&&r.n>=4&&Math.abs(r.d)>=0.0008&&S.ses){ const y=takeSlice(a+r.d,b+r.d);
-    if(y){ const old=S.ses.rt; S.ses.rt=Math.round((S.ses.rt+r.d)*10000)/10000; log('st',`round trip ${msTxt(old)} → ${msTxt(S.ses.rt)} (from the metronome's echo in the take)`); x=y; r=Object.assign(declick(x,a,sr)||{},{moved:r.d}); } }
-  if(r) log('st',`metronome echo in the take: ${r.g>0?dB(r.g*0.85):'none'}${!r.kept&&r.g>0?`, taken out (sure ${r.z.toFixed(0)})`:`, left in (sure ${(r.z||0).toFixed(1)}, needs 6)`}${r.moved?`, take moved ${(r.moved*1000).toFixed(1)} ms`:''}`);
+// build 8: where the knocks' echo is, within ±W s of where the round trip puts it. On 17 Nov the input's delay jumped 69 ms during
+// test 3 (68.1 → 137.4 ms) and had moved back about 35 ms by test 4, so a take cannot trust a round trip measured minutes before.
+// First at 12 kHz over the whole range, then at the full rate within ±1.5 ms of the best; sure = the echo's level over what is left.
+// Only knocks whose echo has fully arrived count.
+// The search runs above 2.5 kHz (the knock's noise snap is at 3 to 4 kHz; most of a guitar is below), so playing hides it less.
+function hp25(y,sr){ const w=2*Math.PI*2500/sr, al=Math.sin(w)/(2*0.707), c=Math.cos(w), a0=1+al, b0=(1+c)/2/a0, b1=-(1+c)/a0, b2=b0, a1=-2*c/a0, a2=(1-al)/a0, o=new Float32Array(y.length); let x1=0,x2=0,y1=0,y2=0;
+  for(let i=0;i<y.length;i++){ const x=y[i], v=b0*x+b1*x1+b2*x2-a1*y1-a2*y2; x2=x1; x1=x; y2=y1; y1=v; o[i]=v; } return o; }
+function echoLag(h0,h1,W){ const K=KT, sr=ctx.sampleRate; if(!K||K.sr!==sr||!IN.ring) return null; const rt=RT(), av=IN.w/IN.sr-rt-W-0.13;
+  const T=K.h||(K.h={a:hp25(K.a,sr),n:hp25(K.n,sr)});
+  const cl=CLK.hist.filter(c=>c.t>=h0&&c.t<=Math.min(h1,av)); if(cl.length<2) return null; const a0=cl[0].t+rt-W-0.01, x0=inSlice(a0,cl[cl.length-1].t+rt+W+0.12); if(!x0) return null; const x=hp25(x0,sr);
+  // each knock weighted by how quiet the input is around it (a knock under a loud strum says little); sure = the peak over the
+  // spread of the sum at shifts more than 3 ms from it (a lucky peak among 2400 shifts reaches about 4)
+  const D=Math.max(1,Math.round(sr/12000)), nW=Math.round(W*sr/D), L=Math.round(0.07*sr/D), tp=c=>c.acc?T.a:T.n, at=c=>Math.round((c.t+rt-a0)*sr), corr=new Float64Array(2*nW+1), wt=[];
+  for(const c of cl){ const t=tp(c), base=at(c); let e=0, ne=0; for(let i=Math.max(0,base-nW*D);i<Math.min(x.length,base+(nW+L)*D);i+=D){ e+=x[i]*x[i]; ne++; } const w=1/Math.sqrt(e/Math.max(1,ne)+1e-14); wt.push(w);
+    for(let k=-nW;k<=nW;k++){ const i0=base+k*D; if(i0<0||i0+L*D>=x.length) continue; let q=0; for(let j=0;j<L;j++) q+=x[i0+j*D]*t[j*D]; corr[k+nW]+=w*q; } }
+  let bk=0; for(let k=1;k<corr.length;k++) if(corr[k]>corr[bk]) bk=k; let s2=0, ns=0; const ex=Math.round(0.003*sr/D); for(let k=0;k<corr.length;k++) if(Math.abs(k-bk)>ex){ s2+=corr[k]*corr[k]; ns++; }
+  const z=ns&&s2>0?corr[bk]/Math.sqrt(s2/ns):0, c0=(bk-nW)*D, Wf=Math.round(0.0015*sr); let best=-Infinity, bd=c0;
+  for(let d=c0-Wf;d<=c0+Wf;d++){ let q=0; cl.forEach((c,ci)=>{ const t=tp(c), i0=at(c)+d; let u=0; for(let j=0;j<t.length;j+=2){ const i=i0+j; if(i>=0&&i<x.length) u+=x[i]*t[j]; } q+=wt[ci]*u; }); if(q>best){ best=q; bd=d; } }
+  return {d:bd/sr,z,n:cl.length,rt}; }
+// the round trip as the echo shows it: moved when sure (8 for one reading), by at least 2 ms; returns the move (s) or 0
+function rtFollow(r,why,zmin){ if(r&&S.ses&&r.z>=(zmin||8)&&r.n>=3) E.rtOK=ctx.currentTime; if(!r||!S.ses||r.z<(zmin||8)||r.n<3||Math.abs(r.d)<0.002) return 0; const old=S.ses.rt; S.ses.rt=Math.round((r.rt+r.d)*10000)/10000;
+  log('st',`round trip ${msTxt(old)} → ${msTxt(S.ses.rt)} (${why}; sure ${r.z.toFixed(0)})`); (E.rtSeen=E.rtSeen||[]).push([ctx.currentTime,S.ses.rt,why]); return S.ses.rt-old; }
+// a take, cut (a, b) in heard time, with the echo out (within ±3 ms of where the round trip puts it: quick, so closing stays instant)
+function cleanTake(a,b){ const sr=ctx.sampleRate, x=takeSlice(a,b); if(!x) return null; const r=declick(x,a,sr);
+  if(r) log('st',`metronome echo in the take: ${r.g>0?dB(r.g*0.85):'none'}${!r.kept&&r.g>0?`, taken out (sure ${r.z.toFixed(0)})`:`, left in (sure ${(r.z||0).toFixed(1)}, needs 6)`}`);
   E.lastClean=r; return x; }
+// build 8: once the loop plays, the take's own knocks are looked for within ±100 ms. If the round trip had moved, the round trip
+// follows and the layer moves by as much (its audio turned around the loop; a synth layer is worked out again), echo out again.
+// h0: the heard time of the layer's first sample when it is not folded (a first pass), else null
+function postCheck(l,a,b,h0){ setTimeout(()=>{ try{ const mv=rtFollow(echoLag(a,b,0.1),'from the metronome echo in the take'); if(mv) shiftLayer(l,mv,h0); }catch(e){ log('err','take check: '+e); } },80); }
+function shiftLayer(l,d,h0){ const sr=ctx.sampleRate, n=Math.round(d*sr), rot=y=>{ const N=y.length, o=new Float32Array(N), k=((n%N)+N)%N; for(let i=0;i<N;i++) o[i]=y[(i+k)%N]; return o; };
+  const b=E.bufs.get(l.id); if(b){ const y=rot(b.getChannelData(0)); if(h0!=null&&l.type==='gtr') declick(y,h0,sr); E.bufs.set(l.id,mkBuf(y,y.length)); storeLayer(l,y,sr); }
+  const raw=E.raws.get(l.id); if(raw){ raw.off=(((raw.off||0)-n)%raw.N+raw.N)%raw.N; IDB.put(S.ses.id+':'+l.id+':raw',Object.assign({},raw,{sr})); const k=S.ses.secs.findIndex(s=>s.layers.includes(l)); if(k>=0) synthLayer(l,k); }
+  log('st',`layer ${TNAME[l.type]} moved ${Math.abs(d*1000).toFixed(1)} ms ${d>0?'earlier':'later'} (recorded while the round trip was off)`); renderAll(); }
+// build 8: between takes too, every 8 s while the metronome runs (8 s of knocks each): two readings in a row that agree within 2 ms
+// move the round trip, if it moved 2 ms or more. And how
+// far the audio thread fell behind each second (the output clock against the page clock), to see what goes with a jump.
+function watchStart(){ if(E.watch) return; E.watch=setInterval(()=>{ try{
+    if(ctx.getOutputTimestamp){ const ts=ctx.getOutputTimestamp(); if(E.gw&&ts.performanceTime>E.gw.p){ const lost=(ts.performanceTime-E.gw.p)-(ts.contextTime-E.gw.c)*1000;
+        if(lost>4){ E.glitch=(E.glitch||0)+lost; log('st',`audio: fell ${lost.toFixed(0)} ms behind in the last second${E.pv?' (live synth on)':''}`); } } E.gw={p:ts.performanceTime,c:ts.contextTime}; }
+    E.tick=(E.tick||0)+1; if(E.tick%8) return; if(!S.ses||!CLK.on||!S.metroOn||!KT) return; const h=IN.w/IN.sr-RT(), r=echoLag(h-8,h,0.1); if(!r||r.z<7){ E.rtLast=null; return; }
+    if(Math.abs(r.rt+r.d-S.ses.rt)<0.002) E.rtOK=ctx.currentTime; const p=E.rtLast; E.rtLast={d:r.d+r.rt,t:ctx.currentTime}; if(p&&ctx.currentTime-p.t<12&&Math.abs(p.d-(r.d+r.rt))<0.002) rtFollow(r,'from the metronome echo',7);
+  }catch(e){} },1000); }
 function fadeEdge(x,sr,a,b){ const na=Math.min(x.length,Math.round(a*sr)), nb=Math.min(x.length,Math.round(b*sr)); for(let i=0;i<na;i++) x[i]*=i/na; for(let i=0;i<nb;i++) x[x.length-1-i]*=i/nb; }
 function newLayer(type,pass){ return {id:uid(),type,pass:pass||null,state:S.autoAccept?'accepted':'pending',printed:false,gain:type==='syn'?S.synth.level:1,muted:false,preset:type==='syn'?S.synth.preset:null,oct:type==='syn'?S.synth.oct:0,glide:!!S.synth.glide,snap:!!S.synth.snap,add:type==='syn'?S.synth.add||'':'',room:S.synth.room!==false,created:Date.now()}; }
 // switch 2 in the first bar of a first pass: a false start, nothing kept
 function firstCancel(){ E.cancelled=true; clearTimeout(E.capT); E.rec=null; prevSync(); E.st=S.ses.secs.length?'stopped':'ready'; if(E.st==='stopped') clkStop(); say('Cancelled: nothing kept.',''); renderAll(); }
 
 // ------------------------------------------------------------------ layers while a section loops: tap on, tap off
-function layerStart(h){ const P=E.play; if(!P) return; E.rec={first:false,h0:h,k:P.k,z:P.z,L:P.L,hits:[]}; prevSync();
-  say('Recording a layer: guitar, pads or both. Switch 1 again stops it.',`Your guitar sounds as ${srcName()} (switch 5 swaps).`); renderAll(); }
+function layerStart(h){ const P=E.play; if(!P) return; const r=E.rec={first:false,h0:h,k:P.k,z:P.z,L:P.L,hits:[]}; prevSync();
+  if(S.len) at(h+P.L-0.005,()=>{ if(E.rec===r) layerStop(h+P.L); });
+  say(S.len?'Recording a layer for one time round: guitar, pads or both.':'Recording a layer: guitar, pads or both. Switch 1 again stops it.',`Your guitar sounds as ${srcName()} (switch 5 swaps).`); renderAll(); }
 async function layerStop(h,quiet){ const r=E.rec; if(!r||r.first) return; E.rec=null; prevSync(); const sec=SEC(r.k), sr=ctx.sampleRate, N=Math.round(r.L*sr), hits=r.hits||[], gt=gtrType(), pass=uid();
   if(h-r.h0<0.15&&!hits.length){ if(!quiet) say('Too short: nothing kept.'); renderAll(); return; }
   let ld=null; if(hits.length){ ld=newLayer('drm',pass); ld._busy=true; ld.hits=hitsC(hits); sec.layers.push(ld); save(); }
@@ -1110,21 +1180,21 @@ async function layerStop(h,quiet){ const r=E.rec; if(!r||r.first) return; E.rec=
     const gpk=G.peakOf(x); if(hits.length&&gpk<=gtrFloor()){ log('st',`guitar peak ${dB(gpk)}, under ${dB(gtrFloor())}: only the pads make a layer`); return null; }
     const lg=newLayer(gt,pass); sec.layers.push(lg); fadeEdge(x,sr,pre,0.008); const off=Math.round(phase(r.h0-pre,r.z,r.L)*sr), y=G.fold(x,N,off);
     if(gt==='syn'){ E.raws.set(lg.id,{x,off,N}); IDB.put(S.ses.id+':'+lg.id+':raw',{x,off,N,sr}); }
-    E.bufs.set(lg.id,mkBuf(y,N)); storeLayer(lg,y,sr); if(E.play&&E.play.k===r.k) layerPlay(E.play,lg,ctx.currentTime+0.02); if(gt==='syn') synthLayer(lg,r.k); return lg; })());
+    E.bufs.set(lg.id,mkBuf(y,N)); storeLayer(lg,y,sr); postCheck(lg,r.h0-pre,h,null); if(E.play&&E.play.k===r.k) layerPlay(E.play,lg,ctx.currentTime+0.02); if(gt==='syn') synthLayer(lg,r.k); return lg; })());
   const out=(await Promise.all(jobs)).filter(Boolean); save(); log('st',`layer on ${sec.name}: ${(h-r.h0).toFixed(2)} s, ${out.map(l=>TNAME[l.type]).join(' and ')||'nothing'} (${hits.length} hits)`);
   if(!quiet) say(out.length?`${out.map(l=>TNAME[l.type]).join(' and ')} layer${out.length>1?'s':''} added: switch 6 keeps, double-tap 6 drops.`:'Nothing came in: nothing kept.',pendTxt()); renderAll(); }
 
 // ------------------------------------------------------------------ synth layers: rendered from the guitar take in a worker
 // The raw take plays until the synth is ready (a second or a few), then the synth takes over at once.
 let SW=null; const SWQ=new Map();
-function synthWorker(){ if(SW!==null) return SW; try{ const src=`${GDSP.toString()}\nconst G=GDSP();\nonmessage=e=>{ const d=e.data; let r; try{ const tr=G.transcribe(d.x,d.sr,{clean:true,prof:d.prof}); const y=G.render(tr,d.sr,d.x.length/d.sr+2.5,d.preset,{oct:d.oct,snap:d.snap,glide:d.glide,add:d.add,room:d.room}); const f=G.fold(y,d.N,d.off); const pk=G.peakOf(f), g=pk>0?0.4/pk:0; for(let i=0;i<f.length;i++) f[i]*=g; const k=G.keyOf(tr.notes), Ls=d.N/d.sr, nt=tr.notes.slice(0,400).map(n=>[Math.round((((n.t0+d.off/d.sr)%Ls)+Ls)%Ls*1000)/1000,Math.round((n.t1-n.t0)*1000)/1000,n.m+12*(d.oct||0),Math.round((n.v||0.5)*100)/100]); r={y:f,notes:tr.notes.length,nt,key:k?k.tonic+':'+k.mode:null}; }catch(x){ r={err:String(x&&x.stack||x)}; } postMessage({id:d.id,r},r.y?[r.y.buffer]:[]); };`;
+function synthWorker(){ if(SW!==null) return SW; try{ const src=`${GDSP.toString()}\nconst G=GDSP();\nonmessage=e=>{ const d=e.data; let r; try{ const tr=G.transcribe(d.x,d.sr,{clean:true,prof:d.prof,lo:d.lo}); const y=G.render(tr,d.sr,d.x.length/d.sr+2.5,d.preset,{oct:d.oct,snap:d.snap,glide:d.glide,add:d.add,room:d.room}); const f=G.fold(y,d.N,d.off); const pk=G.peakOf(f), g=pk>0?0.4/pk:0; for(let i=0;i<f.length;i++) f[i]*=g; const k=G.keyOf(tr.notes), Ls=d.N/d.sr, nt=tr.notes.slice(0,400).map(n=>[Math.round((((n.t0+d.off/d.sr)%Ls)+Ls)%Ls*1000)/1000,Math.round((n.t1-n.t0)*1000)/1000,n.m+12*(d.oct||0),Math.round((n.v||0.5)*100)/100]); r={y:f,notes:tr.notes.length,nt,key:k?k.tonic+':'+k.mode:null}; }catch(x){ r={err:String(x&&x.stack||x)}; } postMessage({id:d.id,r},r.y?[r.y.buffer]:[]); };`;
   SW=new Worker(URL.createObjectURL(new Blob([src],{type:'application/javascript'}))); SW.onmessage=e=>{ const f=SWQ.get(e.data.id); if(f){ SWQ.delete(e.data.id); f(e.data.r); } }; }catch(e){ SW=false; } return SW; }
 function synthRun(d){ return new Promise(res=>{ const w=synthWorker(), id=uid(); d.id=id;
-  if(!w){ setTimeout(()=>{ try{ const tr=G.transcribe(d.x,d.sr,{clean:true,prof:d.prof}), y=G.render(tr,d.sr,d.x.length/d.sr+2.5,d.preset,{oct:d.oct,snap:d.snap,glide:d.glide,add:d.add,room:d.room}), f=G.fold(y,d.N,d.off), pk=G.peakOf(f); for(let i=0;i<f.length;i++) f[i]*=pk>0?0.4/pk:0; res({y:f,notes:tr.notes.length}); }catch(e){ res({err:String(e)}); } },10); return; }
+  if(!w){ setTimeout(()=>{ try{ const tr=G.transcribe(d.x,d.sr,{clean:true,prof:d.prof,lo:d.lo}), y=G.render(tr,d.sr,d.x.length/d.sr+2.5,d.preset,{oct:d.oct,snap:d.snap,glide:d.glide,add:d.add,room:d.room}), f=G.fold(y,d.N,d.off), pk=G.peakOf(f); for(let i=0;i<f.length;i++) f[i]*=pk>0?0.4/pk:0; res({y:f,notes:tr.notes.length}); }catch(e){ res({err:String(e)}); } },10); return; }
   SWQ.set(id,res); w.postMessage(d); }); }
 async function synthLayer(l,k){ let raw=E.raws.get(l.id); if(!raw){ const d=await IDB.get(S.ses.id+':'+l.id+':raw'); if(d){ raw=d; E.raws.set(l.id,d); } } if(!raw) return;
   l._rendering=true; renderAll(); const t0=performance.now();
-  const r=await synthRun({x:raw.x.slice(),sr:ctx.sampleRate,N:raw.N,off:raw.off,preset:l.preset||'pad',oct:l.oct||0,snap:!!l.snap,glide:!!l.glide,add:l.add||'',room:l.room===false?0:1,prof:S.synth.prof||null});
+  const r=await synthRun({x:raw.x.slice(),sr:ctx.sampleRate,N:raw.N,off:raw.off,preset:l.preset||'pad',oct:l.oct||0,snap:!!l.snap,glide:!!l.glide,add:l.add||'',room:l.room===false?0:1,prof:S.synth.prof||null,lo:S.synth.low||40});
   l._rendering=false; if(r.err||!r.y){ log('err','synth render: '+(r.err||'nothing')); say('The synth could not be rendered: the raw take stays.'); renderAll(); return; }
   l.notes=r.notes; if(r.nt) l.nt=r.nt; if(r.key) l.key=r.key; log('st',`synth ${l.preset}: ${r.notes} notes in ${Math.round(performance.now()-t0)} ms`);
   const buf=mkBuf(r.y,raw.N); E.bufs.set(l.id,buf); storeLayer(l,r.y,ctx.sampleRate); save();
@@ -1182,11 +1252,29 @@ async function playFrom(k,o){ o=o||{}; const e=await perfReady(); if(e) say(e); 
   if(!o.newSec) await ensureBufs(k); if(G0!==E.gen) return; await openInput(); if(G0!==E.gen) return;
   if(!o.newSec) S.ses.cur=k; const ci=!!S.countIn, z=ci?ctx.currentTime+0.35+barS():ctx.currentTime+0.03; clkStart(z,60/bpmOf(o.newSec?S.ses.cur:k)); if(ci) countIn(z);
   if(o.newSec){ E.st='first'; E.next={W:z,newSec:true}; say(ci?'Count-in: a new section…':'A new section…'); at(z-0.01,()=>{ if(G0!==E.gen) return; E.next=null; firstStart(z,'next'); }); renderAll(); return; }
-  const P=loopStart(k,z); E.play=P; E.st='loop'; say(ci?`Count-in: section ${SEC(k).name}…`:`Section ${SEC(k).name} is looping.`,pendTxt());
+  capStart('play'); const P=loopStart(k,z); E.play=P; E.st='loop'; say(ci?`Count-in: section ${SEC(k).name}…`:`Section ${SEC(k).name} is looping.`,pendTxt());
   if(o.rec) at(z-0.01,()=>{ if(G0!==E.gen||E.play!==P) return; layerStart(z); }); else at(z,()=>{ if(G0===E.gen&&E.play===P) say(`Section ${SEC(k).name} is looping.`,pendTxt()); });
   renderAll(); }
 // the TP-7 back in the performance stance after printing or tape playback
 let PR=null;
+// build 9: the TP-7's input gain from your playing: a known gain, 4 s of hard strumming, then the gain that puts its peak at -12 dBFS
+// (room above for harder playing). Clipped: 12 dB down and once more. Returns {from, peak, to} or {err}.
+async function levelSet(tick){ const e=await perfReady(); if(e) return {err:e}; const g0=S.tp.gain!=null?S.tp.gain:0; tpGain(g0); await sleep(300);
+  for(let k=0;k<2;k++){ const g=S.tp.gain, r=await capture(4,tick); if(r.err) return r; const pk=G.peakOf(r.x);
+    if(pk<1e-4) return {err:'nothing came in from the guitar (check the cable and that line 1 is a record source)'};
+    if(pk>0.89&&k===0){ tpGain(g-12); await sleep(300); continue; }
+    const to=Math.max(0,Math.min(42,Math.round(g+20*Math.log10(0.25/pk)))); tpGain(to); log('st',`input level: peak ${dB(pk)} at ${g} dB, gain now ${to} dB`); return {from:g,peak:pk,to}; }
+  return {err:'it clipped twice'}; }
+async function levelUI(){ if(E.lvl) return; E.lvl=true; renderAll(); const r=await levelSet(i=>{ say('Input level: strum hard, the way you play loudest.',`${i} s left`); }); E.lvl=false;
+  say(r.err?'Input level: '+r.err+'.':`Input level: your strumming peaked at ${dB(r.peak)} with ${r.from} dB; the TP-7's gain is now ${r.to} dB.`,r.err?'':'Aim: peaks near -12 dBFS.'); renderAll(); }
+// build 9: a tuner (Sounds tab): the strongest repeating period of the last 85 ms (normalised autocorrelation, 66 to 1000 Hz)
+function tuneNow(){ if(!IN.ring||!ctx) return ''; const sr=ctx.sampleRate, D=Math.max(1,Math.round(sr/12000)), s2=sr/D, a=IN.w/IN.sr, x=inSlice(a-0.09,a-0.005); if(!x) return '';
+  const n=Math.floor(x.length/D), y=new Float32Array(n); let pk=0; for(let i=0;i<n;i++){ let q=0; for(let j=0;j<D;j++) q+=x[i*D+j]; y[i]=q/D; if(Math.abs(y[i])>pk) pk=Math.abs(y[i]); } if(pk<0.002) return '';
+  const lo=Math.floor(s2/1000), hi=Math.min(n>>1,Math.ceil(s2/66)), r=new Float32Array(hi+2); let mx=0;
+  for(let t=lo;t<=hi+1;t++){ let ac=0,m=0; for(let i=0;i+t<n;i++){ ac+=y[i]*y[i+t]; m+=y[i]*y[i]+y[i+t]*y[i+t]; } r[t]=m>0?2*ac/m:0; if(t<=hi&&r[t]>mx) mx=r[t]; }
+  if(mx<0.8) return ''; let t=lo+1; while(t<hi&&!(r[t]>=0.9*mx&&r[t]>=r[t-1]&&r[t]>=r[t+1])) t++; const p=0.5*(r[t-1]-r[t+1])/(r[t-1]-2*r[t]+r[t+1]||1e-9), f=s2/(t+Math.max(-0.5,Math.min(0.5,p)));
+  const m=69+12*Math.log2(f/440), mr=Math.round(m), c=Math.round((m-mr)*100), NN=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  return `${NN[((mr%12)+12)%12]}${Math.floor(mr/12)-1} ${c>0?'+':c<0?'−':'±'}${Math.abs(c)} cents`; }
 async function perfReady(){ if(TP.perf&&TP.stance===S.tp.stance&&TP.arm&&TP.arm.v===1) return ''; const e=tpProblem(); if(e) return e+' The app loops anyway, but cannot hear the guitar.';
   if(!PR) PR=tpPerform().finally(()=>{ PR=null; }); return await PR; }
 // stop: the loop and the metronome; a layer being recorded is kept (to keep or drop); the print follows if anything is kept
@@ -1197,7 +1285,8 @@ async function stopAll(quiet,h){ const now=ctx?ctx.currentTime:0; if(h==null) h=
   if(E.play){ loopEnd(E.play,now); E.play=null; } clkStop(); prevSync();
   if(['loop','first','ready','stopped'].includes(E.st)) E.st=S.ses&&S.ses.secs.length?'stopped':(S.ses?'ready':'idle');
   if(E.st==='ready') clkStart(clkFirst(),60/S.ses.bpm);
-  if(!quiet){ say(E.cancelled?'Cancelled: nothing kept.':'Stopped.',pendTxt()); if(S.printOnStop&&toPrint().length) printSoon(); } E.cancelled=false; renderAll(); }
+  const wasCap=!!E.cap; if(E.cap) await capStop();
+  if(!quiet&&!wasCap){ say(E.cancelled?'Cancelled: nothing kept.':'Stopped.',pendTxt()); if(S.printOnStop&&!capOn()&&toPrint().length) printSoon(); } E.cancelled=false; renderAll(); }
 
 // ================================================================== the TP-7 as the tape
 // Printing: one straight pass per section and track, with the sum of that track's kept layers. No TP-7 loop points are ever set
@@ -1236,16 +1325,22 @@ function trackMix(job){ const sec=SEC(job.k), sr=ctx.sampleRate, N=Math.round(se
   if(pk>0.78){ const g=0.78/pk; for(let i=0;i<N;i++) md[i]*=g; log('st',`print ${sec.name} track ${job.track+1}: mix peaked at ${dB(pk)}, turned down ${(-20*Math.log10(g)).toFixed(1)} dB so it does not clip`); }
   return any?mix:null; }
 async function printAll(){ const e=tpProblem(); if(e){ say(e); return; } if(!['stopped','ready'].includes(E.st)) return; printCancelSoon();
+  if(S.ses&&S.ses.capture){ say('This session was recorded as you played: it is on the TP-7 already.','For a version laid out section by section, set Capture to "the arrangement" and start a new session.'); return; }
   const by={}; toPrint().forEach(({l,k})=>{ const key=k+':'+TRACK[l.type]; (by[key]=by[key]||{k,track:TRACK[l.type],layers:[]}).layers.push(l); });
   const jobs=Object.values(by).sort((a,b)=>a.k-b.k||a.track-b.track); if(!jobs.length){ say('Nothing kept to print.'); return; }
   const f=await tpFileNow(), mine=S.ses.file; if(f&&mine&&f.path!==mine.path){ say(`The TP-7 has another recording loaded (${f.path.split('/').pop()}): load ${mine.path.split('/').pop()} on the TP-7 to print this session.`); return; }
   E.st='printing'; E.printStop=false; const G0=++E.gen; A.mon.gain.setTargetAtTime(0,ctx.currentTime,0.01); renderAll(); let err='', done=0;
   // the input's delay can step (8 Nov: 63.5 ms in test 1, 74.1 ms in test 2 an hour later, after the live synth had run): measure it
   // again while the TP-7 is out of the performance stance anyway, and say so if it moved
-  E.rtNote=''; say('Checking the round trip before printing…'); await tpUnperform();
-  if(!(await tpEditTo(0,TPIN.usb1))&&(await tpArm(true))){ const m=await measureRT(); await tpArm(false); const was=S.ses.rt;
+  // build 10: not measured again when the metronome's echo confirmed it in the last 90 s (saves about 2 s per print)
+  E.rtNote=''; await tpUnperform(); const fresh=E.rtOK!=null&&ctx.currentTime-E.rtOK<90;
+  if(fresh) log('st',`round trip ${msTxt(S.ses.rt)}: confirmed by the metronome echo ${Math.round(ctx.currentTime-E.rtOK)} s ago, not measured again`); else say('Checking the round trip before printing…');
+  if(!fresh&&!(await tpEditTo(0,TPIN.usb1))&&(await tpArm(true))){ const m=await measureRT(); await tpArm(false); const was=S.ses.rt;
     if(m.rt!=null){ S.ses.rt=m.rt; S.tp.rt[setupKey()]=m.rt; save(); const dd=(m.rt-was)*1000; log('st',`round trip before printing: ${msTxt(m.rt)} (was ${msTxt(was)})`);
       if(Math.abs(dd)>2) E.rtNote=`The input delay moved ${dd>0?'up':'down'} ${Math.abs(dd).toFixed(1)} ms since it was last measured: layers recorded after that may sit that much ${dd>0?'late':'early'}.`; } }
+  // build 10: the new session's wipe, when it was needed (the guitar played into the 2 s that made the recording)
+  if(S.ses.wipe&&!E.printStop){ say('Printing: wiping track 1 at the start first…'); if(!(await tpEditTo(0,TPIN.erase))&&(await tpToStart())){ const T=ctx.currentTime+0.4;
+      midiSend([0xB0,14,127],T-0.3); midiSend(sxMsg(SXOP.play),T); midiSend([0xB0,14,0],T+2.3); midiSend(sxMsg(SXOP.stop),T+2.36); await sleepTo(T+2.7); S.ses.wipe=false; save(); log('st','track 1 wiped at the start'); } }
   // the first section's passes go by the start lag: measure it now, with the same start (track 1 armed from USB 1, the app silent)
   if(jobs.some(j=>SEC(j.k).s<1.3)){ say('Measuring the TP-7\'s start…'); const lg=await lagProbe(); if(lg==null) log('err','start lag not measured; the last one is used'); }
   for(const [i,job] of jobs.entries()){ if(E.printStop||G0!==E.gen) break; const sec=SEC(job.k);
@@ -1261,6 +1356,9 @@ async function startPass(){ mNow(sxMsg(SXOP.session)); await sleep(300); const P
 async function lagProbe(){ if(await tpEditTo(0,TPIN.usb1)) return null; if(!(await tpToStart())) return null; if(!(await tpArm(true))) return null; const P0=await startPass();
   await waitFor(()=>posFit(P0,0).n>=5,3000,10); const f=posFit(P0,0); mNow([0xB0,14,0]); await sleep(60); mNow(sxMsg(SXOP.stop)); await waitFor(()=>TP.arm&&TP.arm.v===0,500,10); await sleep(250);
   if(f.n<3) return null; const lag=f.c-P0; (S.tp.lag=S.tp.lag||{}).edit=Math.round(lag*10)/10; save(); log('st',`start lag (edit mode, from the start): ${lag.toFixed(1)} ms, timing within ${f.width!=null?f.width.toFixed(1):'?'} ms`); return lag; }
+// the round trip measured now (the TP-7 out of the performance stance: track 1 from USB 1, armed); null if it could not be
+async function rtRemeasure(){ await tpUnperform(); if(await tpEditTo(0,TPIN.usb1)) return null; if(!(await tpArm(true))) return null; const m=await measureRT(); await tpArm(false);
+  if(m.rt==null) return null; const was=S.ses?S.ses.rt:null; if(S.ses) S.ses.rt=m.rt; S.tp.rt[setupKey()]=m.rt; save(); log('st',`round trip measured: ${msTxt(m.rt)}${was!=null?` (was ${msTxt(was)})`:''}`); (E.rtSeen=E.rtSeen||[]).push([ctx.currentTime,m.rt,'measured']); return {rt:m.rt,was}; }
 async function printPass(job){ const ses=S.ses, sec=SEC(job.k); await ensureBufs(job.k); const mix=trackMix(job); if(!mix) return 'The layers have no audio.';
   await tpUnperform(); mNow([0xB0,17,0]); mNow(sxMsg(SXOP.stop)); await sleep(150);
   const r=await tpEditTo(job.track,TPIN.usb1); if(r) return r; const tag='print', end=ses.fileEnd||0;
@@ -1298,7 +1396,7 @@ async function printPass(job){ const ses=S.ses, sec=SEC(job.k); await ensureBufs
 // Build 3: the quickest start. A cue note held down makes the TP-7 jump and play at once (14 Oct; build 2 went through edit mode, a
 // cue tap, a stop and a position read first: about 2 s). The first section has no cue (it starts 0.25 s in): go to start, then Play.
 // Loop points need the tape's timing before the section starts: from its reports when there is time, else from the start lag.
-async function tapePlay(k,loop){ const e=tpProblem(); if(e){ say(e); return; } printCancelSoon(); if(E.st==='printing'){ toast('Printing: wait for it to finish.'); return; }
+async function tapePlay(k,loop){ const e=tpProblem(); if(e){ say(e); return; } printCancelSoon(); if(E.cap) await capStop(); if(capOn()&&!S.ses.file){ say('The TP-7 recordings of this session are takes, one per play-through: play them on the TP-7.'); return; } if(E.st==='printing'){ toast('Printing: wait for it to finish.'); return; }
   await stopAll(true); const sec=SEC(k); if(!sec) return; const G0=++E.gen; E.st='tape'; E.tape={k,loop}; renderAll();
   tpRelease(); if(TP.arm&&TP.arm.v===1){ TP.perf=false; mNow([0xB0,14,0]); await waitFor(()=>TP.arm&&TP.arm.v===0,400,5); } mNow([0xB0,17,0]); if(G0!==E.gen) return;
   const C=S.ses.cues, lg=S.tp.lag||{}; let n=null, q=0, P0, lag;
@@ -1314,7 +1412,8 @@ async function tapePlay(k,loop){ const e=tpProblem(); if(e){ say(e); return; } p
   if(loop){ const md=S.tp.mDelay, adj=S.tp.loopAdj;
     await waitFor(()=>G0!==E.gen||posFit(P0,q,150).n>=3||tP(sec.s)+md-performance.now()<200,4000,10); if(G0!==E.gen) return; const f=posFit(P0,q,150); if(f.n>=3) tP=p=>f.c+p*1000;
     const tin=tP(sec.s)+md; if(tin<performance.now()+15){ log('err',`tape loop: section ${sec.name} began before the loop could be set`); say(`TP-7: playing section ${sec.name}; the loop could not be set in time.`); }
-    else { midiSendPerf([0xB0,17,1],tin,'tape'); midiSendPerf([0xB0,17,2],tP(sec.s+sec.L)+md+adj,'tape'); } }
+    // build 8: both loop points 8 ms early (17 Nov: about 7 of 8 clicks per round, the first one cut at the wrap)
+    else { midiSendPerf([0xB0,17,1],tin-8,'tape'); midiSendPerf([0xB0,17,2],tP(sec.s+sec.L)+md+adj-8,'tape'); } }
   // a second of reports: the real start lag for next time, and cues that are missing on the way
   await waitFor(()=>G0!==E.gen||posFit(P0,q,150).n>=4,3000,20); if(G0!==E.gen) return; const fit=posFit(P0,q,150); if(!fit.n){ say('The TP-7 is not playing (no position reports).'); return; }
   const real=fit.c+q*1000-P0; if(real>0&&real<400){ S.tp.lag=S.tp.lag||{}; const key=n!=null?'cue':'play', o=S.tp.lag[key]; S.tp.lag[key]=Math.round((o==null?real:0.5*o+0.5*real)*10)/10; save(); log('st',`TP-7 playback started ${real.toFixed(1)} ms after the ${n!=null?'cue note':'Play'}`); }
@@ -1339,8 +1438,8 @@ async function act2(a,h){ const st=E.st, ses=S.ses;
     if(st==='tape'){ await tapeStop(); return playFrom(ses.cur||0,{rec:true}); }
     if(st==='idle') return prepSession(ses?ses.bpm:(TAP.bpm||100));
     if(st==='ready'){ printCancelSoon(); await openInput(); if(!CLK.on) clkStart(clkFirst()); return firstStart(S.loopBars?clkNear(h):h); }
-    if(st==='first'){ if(E.rec) return firstClose(h); return; }
-    if(st==='loop'){ if(E.next){ say('Changing section: record once it starts.'); return; } if(E.rec) return layerStop(h); return layerStart(h); }
+    if(st==='first'){ if(E.rec){ if(await retro(h)) return; return firstClose(h); } return; }
+    if(st==='loop'){ if(E.next){ say('Changing section: record once it starts.'); return; } if(E.rec){ if(await retro(h)) return; return layerStop(h); } return layerStart(h); }
     if(st==='stopped'){ printCancelSoon(); return playFrom(ses.cur||0,{rec:true}); }
     return; }
   if(a==='src'){ S.src=S.src==='syn'?'gtr':'syn'; save(); prevSync(); say(`Your guitar sounds as ${srcName()}.`,E.rec?'The layer being recorded becomes that when you close it.':'Switch 5 swaps it back.'); return; }
@@ -1360,7 +1459,11 @@ async function act2(a,h){ const st=E.st, ses=S.ses;
   if(a==='drop') return dismissPass(newestPending()); }
 // switch 6: with a pass to keep or drop, a tap keeps it and a double tap (within 0.35 s) drops it; otherwise tap tempo
 const SIX={n:0,t:null};
-function six(ev){ if(newestPending()){ SIX.n++; clearTimeout(SIX.t); if(SIX.n>=2){ SIX.n=0; act('drop',ev); return; } SIX.t=setTimeout(()=>{ SIX.n=0; act('keep'); },350); return; }
+// build 11: while looping, with nothing to keep or drop: a tap undoes the newest layer, two taps bring it back; a tap while recording
+// cancels that recording
+function six(ev){ if(!newestPending()&&(E.st==='loop'||E.st==='first')){ if(E.rec){ SIX.n=0; if(E.rec.first){ firstCancel(); if(E.cap&&!S.ses.secs.length) capStop(); return; } E.rec=null; prevSync(); say('Layer cancelled.'); renderAll(); return; }
+    SIX.n++; clearTimeout(SIX.t); if(SIX.n>=2){ SIX.n=0; peelRedo(); return; } SIX.t=setTimeout(()=>{ SIX.n=0; peelUndo(); },350); return; }
+  if(newestPending()){ SIX.n++; clearTimeout(SIX.t); if(SIX.n>=2){ SIX.n=0; act('drop',ev); return; } SIX.t=setTimeout(()=>{ SIX.n=0; act('keep'); },350); return; }
   if(SIX.n){ SIX.n=0; clearTimeout(SIX.t); } tapTempo(evT(ev)); }
 const TAP={taps:[],bpm:null};
 function tapTempo(ts){ initAudio(); const st=E.st; if(!['idle','stopped','ready'].includes(st)){ if(st==='loop') say('Nothing to keep or drop.'); return; }
@@ -1414,11 +1517,13 @@ function renderScreen(){ const st=$('#scState'), sm=$('#scSmall'), ti=$('#scTitl
   const p=pending().length; if(p) ch.push(`<span class="chip bad">${p} to keep or drop</span>`);
   const q=toPrint().length; if(q) ch.push(`<span class="chip">${q} to print</span>`);
   if(IN.stream) ch.push(`<span class="chip ${IN.pk>0.003?'on':''}">in ${IN.pk>3e-5?Math.round(20*Math.log10(IN.pk))+' dB':'silent'}</span>`);
+  if(E.cap) ch.push(`<span class="chip rec">● TP-7 ${fmtS((performance.now()-E.cap.p0)/1000)}</span>`);
   const h=ch.join(''); if(h!==E.chipsH){ $('#scChips').innerHTML=h; E.chipsH=h; } }
 setInterval(()=>{ const p=$('#scPos'); if(!p) return; const t=posTxt(); if(p.textContent!==t) p.textContent=t; p.classList.toggle('rec',!!(E.rec||E.st==='first'));
   const r=$('#scRing'); if(r&&ctx){ let f=0; if(E.play){ f=phase(ctx.currentTime,E.play.z,E.play.L)/E.play.L; if(ctx.currentTime<E.play.z) f=0; } else if(E.st==='first'&&E.rec){ f=((ctx.currentTime-E.rec.S0)/barS())%1; } r.style.width=(Math.max(0,f)*100).toFixed(1)+'%'; r.style.background=E.rec||E.st==='first'?'#ff6a5e':''; }
   ciShow(E.ci&&ctx&&ctx.currentTime>=E.ci.a-0.01&&ctx.currentTime<E.ci.b?String(Math.min(4,Math.floor((ctx.currentTime-E.ci.a)/E.ci.beat+0.02)+1)):'');
   const m=$('#sndIn i'); if(m) m.style.width=Math.min(100,Math.max(0,(IN.pk>1e-5?(20*Math.log10(IN.pk)+60)/60:0)*100)).toFixed(0)+'%';
+  const tu=$('#sndTune'); if(tu&&(E.tuT=(E.tuT||0)+1)%2===0){ const t=tuneNow(); if(t||!E.tuHold||Date.now()-E.tuHold>1500){ tu.textContent=t||'tuner: play one string'; if(t) E.tuHold=Date.now(); } }
   if(E.tab==='Arr'){ const ts=trState(); if(ts!==E.trShown) renderTransport(); }
   renderScreen(); },60);
 function ciShow(n){ let el=$('#countBig'); if(!el){ if(!n) return; el=document.createElement('div'); el.id='countBig'; el.className='count-big'; el.setAttribute('aria-hidden','true'); document.body.appendChild(el); } if(el.textContent!==n) el.textContent=n; el.hidden=!n; }
@@ -1554,17 +1659,27 @@ function renderSnd(){ const el=$('#pSnd'); if(!el) return; const s=S.synth, syn=
     <div class="row"><span class="lbl">Snap to the loop's key</span><button type="button" class="btn sm" data-tog="synth.snap" aria-pressed="${!!s.snap}">${s.snap?'On':'Off'}</button></div>
     <div class="row"><span class="lbl">Add a note</span><select data-set="synth.add" aria-label="Add a note">${[['','None'],['sub','Sub octave'],['oct','Octave up'],['third','Third, in key'],['fifth','Fifth, in key']].map(([v,n])=>`<option value="${v}"${(s.add||'')===v?' selected':''}>${n}</option>`).join('')}</select></div>
     <div class="row"><span class="lbl">Follow bends</span><button type="button" class="btn sm" data-tog="synth.glide" aria-pressed="${!!s.glide}">${s.glide?'On':'Off'}</button></div>
+    <div class="row"><span class="lbl">Drop D (lowest note D2)</span><button type="button" class="btn sm" data-act="dropD" aria-pressed="${(s.low||40)===38}">${(s.low||40)===38?'On':'Off'}</button></div>
     <div class="row"><span class="lbl">Room</span><button type="button" class="btn sm" data-tog="synth.room" aria-pressed="${s.room!==false}">${s.room!==false?'On':'Off'}</button></div>
     <div class="row"><span class="lbl">Your guitar</span><button type="button" class="btn sm" data-act="teach" ${E.teach?'disabled':''}>${E.teach?'Listening…':s.profN?`Learnt (${s.profN}): again`:'Teach it'}</button>${s.profN?'<button type="button" class="btn sm" data-act="teachReset">Forget</button>':''}</div>
     <div class="row"><span class="lbl">Hear it here as you strum</span><button type="button" class="btn sm" data-tog="sndPrev" aria-pressed="${S.sndPrev!==false}">${S.sndPrev!==false?'On':'Off'}</button></div>
     <div class="row"><span class="lbl">Hear it while you record</span><button type="button" class="btn sm" data-tog="synth.preview" aria-pressed="${!!s.preview}">${s.preview?'On':'Off'}</button></div>
     <div class="row"><span class="lbl">Guitar in</span><span class="meterbar" id="sndIn"><i></i></span></div>
+    <div class="row"><span class="lbl">Tuner</span><span class="note" id="sndTune">tuner: play one string</span></div>
     <p class="note">${E.sndNote?esc(E.sndNote)+' ':''}${syn?(S.sndPrev!==false?`Strum: you hear the ${esc(G.PRESETS[s.preset].name)} synth about ${Math.round((RT()+0.022)*1000)} ms after your guitar (the round trip plus about 20 ms of tracking). `:''):''}Switch 5 swaps raw and synth hands-free. A synth layer is worked out again from the whole take when you close it (with a finer look that takes out notes the live synth got wrong), and plays in time from the next round. Teach it: 15 s of single notes, so the synth knows your guitar's sound.</p></div>`; }
 
 function renderSet(){ const el=$('#pSet'); if(!el) return; const info=TP.info;
   el.innerHTML=`<div class="card"><h3>TP-7</h3><div class="row"><button type="button" class="btn pri" data-act="connect">Connect</button><span class="note" id="midiNote">${esc(R.note||'Not connected.')}</span></div>
     ${info?`<p class="note">${esc(info.product||'')} ${esc(info.sw_version||'')}</p>`:''}<p class="note">Audio: ${ctx?`${ctx.sampleRate} Hz, ${ctx.destination.maxChannelCount} output channel${ctx.destination.maxChannelCount>1?'s':''}, input ${IN.kind||'closed'}`:'not started'}. Round trip: ${S.ses&&S.ses.rt!=null?msTxt(S.ses.rt):'measured at each new session'}.</p>
     <p class="note">While you play, the TP-7 stands in ${stName(S.tp.stance)}${S.tp.stance==='normal'?' (pressing play on the TP-7 then would start a new recording)':''}. Diagnostics test 1 checks which stance lets you hear both your guitar and the app.</p></div>
+  <div class="card"><h3>Capture</h3>
+    <div class="row"><span class="lbl">The TP-7 records</span><select data-set="mode" aria-label="When the TP-7 records"><option value="capture"${capOn()?' selected':''}>as you play</option><option value="arrange"${!capOn()?' selected':''}>the arrangement, when you stop</option></select></div>
+    <div class="row"><span class="lbl">Loop length</span><select data-set="len" aria-label="Loop length">${[[0,'free: switch 1 closes it'],[1,'1 bar'],[2,'2 bars'],[4,'4 bars'],[8,'8 bars']].map(([v,n])=>`<option value="${v}"${(S.len||0)===v?' selected':''}>${n}</option>`).join('')}</select></div>
+    <p class="note">${capOn()?'As you play: the TP-7 records from your first loop or Play until you stop, one recording per play-through. Track 1 your guitar, 2 what you hear, 3 the loops and pads without the metronome. Nothing to print or wait for.':'The arrangement: each section goes to the TP-7 in its own place when you stop (section by section, track by track), so the TP-7 can play from any section.'}</p>
+    <p class="note">Switches: 1 records (twice quickly keeps what you just played), 2 play/stop, 3 and 4 sections, 5 raw/synth, 6 undoes the newest layer (twice: brings it back; four taps when stopped: a new session).</p></div>
+  <div class="card"><h3>Guitar input (TP-7 line 1)</h3><div class="row"><span class="lbl">Input gain: ${S.tp.gain!=null?S.tp.gain+' dB':'as set on the TP-7'}</span><button type="button" class="btn sm" data-act="gainDn" aria-label="Gain down 3 dB">−</button><button type="button" class="btn sm" data-act="gainUp" aria-label="Gain up 3 dB">+</button></div>
+    <div class="row"><button type="button" class="btn sm" data-act="gainAuto" ${E.lvl?'disabled':''}>${E.lvl?'Listening…':'Set from my playing'}</button></div>
+    <p class="note">A guitar plugged straight into the TP-7 is quiet (near −30 dBFS on 17 Nov). The app sets the TP-7's input gain (0 to 42 dB) over MIDI; aim for peaks near −12 dBFS. The TP-7 lets you hear your guitar at that level too.</p></div>
   <div class="card"><h3>Mix</h3>${[['metro','Metronome'],['loop','Loops'],['pads','Pads'],['prev','Synth while you play']].map(([k,n])=>`<div class="row"><span class="lbl">${n}</span><input type="range" min="0" max="1" step="0.05" value="${S.lv[k]}" data-lv="${k}" aria-label="${n}"></div>`).join('')}
     <div class="row"><span class="lbl">Metronome</span><button type="button" class="btn sm" data-tog="metroOn" aria-pressed="${!!S.metroOn}">${S.metroOn?'On':'Off'}</button></div></div>
   <div class="card"><h3>Looping</h3>
@@ -1599,6 +1714,9 @@ document.addEventListener('click',async e=>{ const t=e.target.closest&&e.target.
   if(a==='shClose'){ E.sheet=null; $('#sheet').hidden=true; return; }
   if(a==='padCal') return padCalStart();
   if(a==='teach') return teach();
+  if(a==='gainAuto') return levelUI();
+  if(a==='gainUp'||a==='gainDn'){ tpGain((S.tp.gain!=null?S.tp.gain:0)+(a==='gainUp'?3:-3)); renderAll(); return; }
+  if(a==='dropD'){ S.synth.low=(S.synth.low||40)===38?40:38; save(); prevSync(); say(S.synth.low===38?'Drop D: the synth listens down to D2.':'Standard tuning: the synth listens down to E2.'); renderAll(); return; }
   if(a==='teachReset'){ S.synth.prof=null; S.synth.profN=0; save(); prevSync(); say('The synth uses its general guitar shape again.'); renderAll(); return; }
   if(a==='loopApp'){ E.tmode='app'; E.sheet=null; $('#sheet').hidden=true; if(E.st==='tape') await tapeStop(); if(E.st==='loop'&&E.play&&E.play.k!==k) return goSection(k); if(E.st==='stopped') return playFrom(k); return; }
   if(a==='tapePlay'||a==='tapeLoop'){ S.ses.cur=k; E.tmode='tape'; E.tloop=a==='tapeLoop'; E.sheet=null; $('#sheet').hidden=true; return tapePlay(k,a==='tapeLoop'); }
@@ -1629,7 +1747,8 @@ const TESTS=[
   {id:'t2',name:'2. Printing to the TP-7',time:'about 2 minutes, automatic',desc:'Makes a test session at 120 bpm (a new TP-7 recording), prints click layers in three passes onto track 1, then plays the recording back and listens: do the passes line up, where do they land, do the cues jump right, and does the TP-7 loop a section cleanly. Your current session ends.'},
   {id:'t3',name:'3. Your first loop, start to finish',time:'about 3 minutes, your guitar and footswitch',desc:'A real session with prompts: four taps for the tempo, a guitar loop, a synth layer, keep both, stop, the print, then the TP-7 plays it back. You say how each step sounded. Run it after test 1 has passed.'},
   {id:'t4',name:'4. Sending the song: per track or in one pass',time:'about 4 minutes, automatic, one hand step on the TP-7',desc:'Compares three ways to get a song onto the TP-7, with guitar on track 1, synth on track 2 and drums on track 3 (two layers each, two sections). A: the current way, one pass per section and track. C: synth and drums in one new recording (USB 1 and 2), then the guitar in one pass. B: all three tracks in one new recording, which needs the record sources set to USB 1, USB 2 and USB 3 for that run. For each: the time it takes and where every track lands, from the playback. Keep your guitar quiet. Your current session ends.'},
-  {id:'t5',name:'5. The synth and your guitar',time:'about 2 minutes, your guitar',desc:'Build 7 has a new tracker after Guitarcatcher: every note gets its own level and pitch, every 5.3 ms. This teaches it your guitar (15 s of single notes), measures its own delay on your notes from the recording (so the round trip is not in it), plays you the synth version of 10 s of your chords, then lets you play the live synth. You say how each sounded.'}
+  {id:'t5',name:'5. The synth and your guitar',time:'about 2 minutes, your guitar',desc:'Build 7 has a new tracker after Guitarcatcher: every note gets its own level and pitch, every 5.3 ms. This teaches it your guitar (15 s of single notes), measures its own delay on your notes from the recording (so the round trip is not in it), plays you the synth version of 10 s of your chords, then lets you play the live synth. You say how each sounded. Build 8: it also measures the round trip before and after the live synth, to see whether the synth moves it.'},
+  {id:'t6',name:'6. Capture: the TP-7 records as you play',time:'about 3 minutes, your guitar and footswitch',desc:'Build 11. Checks whether the TP-7 lets you hear USB 2, then a real capture session: a loop, a layer, undo and redo on switch 6, keeping what you just played with switch 1 twice, and stop. Then you play the new TP-7 recording and say what you hear.'}
 ];
 function diagRender(){ const d=$('#diag'); if(!d||d.hidden) return;
   d.innerHTML=`<div class="wrap"><div class="row"><h2 style="flex:1">Diagnostics <small class="note">build ${APP_BUILD}</small></h2><button type="button" class="btn" data-dg="close">Close</button></div>
@@ -1651,7 +1770,8 @@ function ask(main,opts){ banner(main,opts.map((o,i)=>`switch ${i+1}: ${o}`).join
 const dgLine=(id,s)=>{ (DG.res[id]=DG.res[id]||[]).push(s); log('test',s); diagRender(); };
 async function countdown(main,sub,sec){ for(let i=sec;i>0;i--){ if(DG.stop) return false; banner(main,sub,`${i}`); await sleep(1000); } banner(''); return !DG.stop; }
 async function runTest(id){ DG.run=id; DG.stop=false; DG.res[id]=[]; DG.sx[id]=TP.sxlog=[]; diagRender(); log('app',`test ${id} started, build ${APP_BUILD}`);
-  try{ await ({t1,t2,t3,t4,t5})[id](); }catch(err){ dgLine(id,'✗ error: '+(err&&err.stack||err)); }
+  // tests 2 to 4 time the section-by-section print, so their sessions are arrangement sessions whatever Capture is set to
+  E.forceArr=['t2','t3','t4'].includes(id); try{ await ({t1,t2,t3,t4,t5,t6})[id](); }catch(err){ dgLine(id,'✗ error: '+(err&&err.stack||err)); } finally{ E.forceArr=false; }
   TP.sxlog=null; DG.run=null; banner(''); PED.gate=null; DG.ans=null; diagRender(); }
 async function dgBasics(id){ initAudio(); const e=tpProblem(); if(e){ dgLine(id,'✗ '+e); return false; }
   const m=await sxAlive(); if(!m){ dgLine(id,'✗ The TP-7 does not answer over SysEx.'); return false; }
@@ -1681,6 +1801,10 @@ async function stanceCheck(id,st){ S.tp.stance=st; const r=await tpPerform(); if
   const aa=await ask('Did you hear eight clicks?',['yes','no']); if(aa<0) return null; dgLine(id,`  ${aa===0?'✓':'✗'} you hear the app: ${aa===0?'yes':'no'}`);
   return {app:lv>0.01,gtr:ag===0,heard:aa===0}; }
 async function t1(){ const id='t1'; if(!(await dgBasics(id))) return; await stopAll(true);
+  // build 9: the input level first (a guitar straight into the TP-7 came in near -30 dBFS on 17 Nov)
+  const lv=await levelSet(i=>{ if(DG.stop) return false; banner('Strum hard','the way you play loudest',`${i}`); }); banner('');
+  dgLine(id,lv.err?`✗ input level: ${lv.err}`:`${lv.peak>=0.05?'✓':'·'} input level: peak ${dB(lv.peak)} at ${lv.from} dB gain; TP-7 gain now ${lv.to} dB${lv.to>=42?' (the most it has: a preamp or the Mustang Micro before the TP-7 would help)':''}`);
+  await stopAll(true);
   // the round trip (track 1 from USB 1, armed while standing), twice
   let r=await tpEditTo(0,TPIN.usb1); if(r){ dgLine(id,'✗ '+r); return; } await tpToStart(); await tpArm(true); const rts=[];
   for(let i=0;i<2&&!DG.stop;i++) rts.push(await measureRT()); await tpArm(false);
@@ -1749,6 +1873,7 @@ async function t2(){ const id='t2'; if(!(await dgBasics(id))) return; dgLine(id,
   // the same click one loop later: any later click of the same pitch about L later (build 1 counted clicks, and a click lost at the wrap broke the count)
   const iv=[]; cls.forEach((c,i)=>{ const n=cls.slice(i+1).find(x=>x.f===c.f&&Math.abs(x.t-c.t-L)<0.03); if(n) iv.push(n.t-c.t-L); });
   dgLine(id,iv.length?`${Math.abs(medOf(iv))<0.004?'✓':'✗'} TP-7 loop length: ${iv.length} repeats, the loop ${Math.abs(medOf(iv)*1000).toFixed(1)} ms ${medOf(iv)<0?'short':'long'} (loop out correction ${S.tp.loopAdj} ms)`:'✗ TP-7 loop length: no repeat measured');
+  if(iv.length>=4&&Math.abs(medOf(iv))>=0.002&&Math.abs(medOf(iv))<0.06){ const was=S.tp.loopAdj; S.tp.loopAdj=Math.round((was-medOf(iv)*1000)*10)/10; S.tp.loopLearnt=true; save(); dgLine(id,`· loop out correction now ${S.tp.loopAdj} ms (was ${was} ms), for the next TP-7 loop`); }
   const per=cls.length?Math.round(cls.length/Math.max(1,(cls[cls.length-1].t-cls[0].t)/L)):0; dgLine(id,`· about ${per} of A's 8 clicks per time round heard${per<8?' (one lost at the wrap means the loop point cuts the first beat)':''}`);
   // ▶ TP-7 from B: held cue note, no stop or edit toggle (B's first click is on beat 2)
   if(!DG.stop&&ses.cues[1]!=null){ const g2=ctx.currentTime; await tapePlay(1,false); await sleep(2200); await tapeStop(); const c2=clicksIn(g2,ctx.currentTime-0.1).map(t=>({t,f:clickHz(t)})).find(c=>c.f>1750);
@@ -1806,6 +1931,7 @@ async function t4Play(track,lenS){ await tpUnperform(); await tpEditTo(track,TPI
   return {res,heard:ts.length,width:fit.width}; }
 // listen to one run: the first time also finds out what the USB return carries (all tracks, the selected one, or track 1 only)
 async function t4Listen(id,lenS){ const out={}; const take=(r,ts)=>ts.forEach(t=>{ if(r&&r.res[t].n) out[t]=r.res[t]; });
+  const rr=await rtRemeasure(); dgLine(id,rr?`  · round trip now ${msTxt(rr.rt)}${rr.was!=null?` (was ${msTxt(rr.was)})`:''}`:'  · round trip not measured; the last one is used');
   banner('Listen: the TP-7 plays it back','Guitar low, synth middle, drums high: three clicks on every beat.'); const r1=await t4Play(0,lenS); banner(''); if(!r1){ dgLine(id,'  ✗ no position reports during playback'); return out; }
   if(DG.ret==null){ if(r1.res.syn.n||r1.res.drm.n) DG.ret='mix'; else { const r2=await t4Play(1,lenS); DG.ret=r2&&r2.res.syn.n?'selected':'track1'; take(r2,['syn']); }
     dgLine(id,`  · the app hears ${DG.ret==='mix'?'every track at once':DG.ret==='selected'?'the selected track':'track 1 only'} when the TP-7 plays back${DG.ret==='track1'?' (tracks 2 and 3 cannot be measured; listen to them)':''}`); }
@@ -1856,6 +1982,8 @@ async function t3(){ const id='t3'; if(!(await dgBasics(id))) return; await stop
   if(!(await stepWait('Tap switch 6 four times','At a tempo you like. The TP-7 then gets ready (about 8 s).',()=>E.st==='prep',60000))) return;
   if(!(await stepWait('Getting the TP-7 ready…','',()=>E.st!=='prep',40000))) return; if(E.st!=='ready'){ dgLine(id,'✗ session: '+E.msg); return; }
   dgLine(id,`✓ session ready at ${S.ses.bpm} bpm, round trip ${msTxt(S.ses.rt)}, ${fileTxt(S.ses.file)}`);
+  if(!S.metroOn){ S.metroOn=true; save(); if(!CLK.on) clkStart(clkFirst()); dgLine(id,'· the metronome was off (switch 2 turns it on and off while no loop plays): turned on'); }
+  dgLine(id,`· metronome level ${S.lv.metro}, app sound ${E.pv?'with the live synth':'raw guitar'}`);
   const hm=await ask('Do you hear the metronome?',['yes','no']); dgLine(id,`${hm===0?'✓':'✗'} metronome heard: ${hm===0?'yes':'no'}`); if(hm<0) return;
   if(!(await stepWait('Switch 1, then play two bars of chords','Switch 1 again at the end of the second bar.',()=>E.st==='loop'&&S.ses.secs.length===1,90000))) return;
   const A0=S.ses.secs[0]; await waitFor(()=>E.bufs.get(A0.layers[0]&&A0.layers[0].id),3000); const b0=E.bufs.get(A0.layers[0].id); let pk=0; if(b0) for(const v of b0.getChannelData(0)) pk=Math.max(pk,Math.abs(v));
@@ -1881,7 +2009,8 @@ function diagHide(on){ const d=$('#diag'); if(!d) return; if(on){ d.hidden=true;
 
 function diagReport(){ const L=[`Tinebox Loop diagnostics, ${new Date().toLocaleString()}`,`Build ${APP_BUILD}`,`TP-7: ${TP.info?JSON.stringify(TP.info):'no greet reply'}`,
   ctx?`Audio: ${ctx.sampleRate} Hz, ${ctx.destination.maxChannelCount} output channels, base latency ${msTxt(ctx.baseLatency)}, output latency ${msTxt(ctx.outputLatency)}, input ${IN.kind||'closed'}`:'Audio: not started',
-  `Settings: ${JSON.stringify({tp:S.tp,synth:S.synth,padFix:S.padFix,printOnStop:S.printOnStop})}`,''];
+  `Settings: ${JSON.stringify({tp:S.tp,synth:S.synth,padFix:S.padFix,printOnStop:S.printOnStop,metroOn:S.metroOn,lv:S.lv,src:S.src,loopBars:S.loopBars,countIn:S.countIn})}`,
+  `Round trip moves seen this page load: ${JSON.stringify((E.rtSeen||[]).map(q=>[+q[0].toFixed(1),+(q[1]*1000).toFixed(1),q[2]]))}; audio thread behind: ${(E.glitch||0).toFixed(0)} ms in all`,''];
   TESTS.forEach(t=>{ if(!DG.res[t.id]) return; L.push(`== ${t.name}`,...DG.res[t.id]); const sx=DG.sx[t.id]; if(sx&&sx.length){ const t0=sx[0].t; L.push('-- TP-7 messages',...sx.map(x=>`  ${((x.t-t0)/1000).toFixed(3).padStart(8)} ${x.s}`)); } L.push(''); });
   L.push('== Log',logText(300)); return L.join('\n'); }
 
@@ -1909,11 +2038,11 @@ function liveRun(x,sr){ const Lv=new G.Live(sr,{preset:S.synth.preset,prof:S.syn
   lat.sort((p,q)=>p-q); const q=f=>lat.length?Math.round(lat[Math.min(lat.length-1,Math.floor(lat.length*f))]):'n/a';
   return {med:q(0.5),p90:q(0.9),found:lat.length,n:on.length,blk:(tot/Math.max(1,nb)).toFixed(3),worst:worst.toFixed(2),bud:(128/sr*1000).toFixed(2)}; }
 async function t5(){ const id='t5'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
-  dgLine(id,`· audio ${ctx.sampleRate} Hz, input ${IN.kind}, round trip ${msTxt(RT())}, synth ${G.PRESETS[S.synth.preset].name}`);
+  dgLine(id,`· audio ${ctx.sampleRate} Hz, input ${IN.kind}, round trip ${msTxt(RT())}, synth ${G.PRESETS[S.synth.preset].name}, lowest note ${(S.synth.low||40)===38?'D2 (drop D)':'E2'}`);
   let r=await capture(15,i=>{ if(DG.stop) return false; banner('Single notes, one at a time','each ringing about half a second, low to high on all six strings',`${i}`); }); banner('');
   if(r.err){ dgLine(id,'✗ '+r.err); return; } const pk=G.peakOf(r.x); dgLine(id,`· single notes: input peak ${dB(pk)}`); if(pk<0.005){ dgLine(id,'✗ almost nothing came in: check the guitar and record source line 1'); return; }
-  const L=G.learnProf(r.x,r.sr);
-  if(L.prof){ S.synth.prof=L.prof; S.synth.profN=L.notes.length; save(); dgLine(id,`✓ learnt your guitar from ${L.notes.length} notes (${L.notes.slice(0,24).map(nName).join(' ')})`); dgLine(id,`· profile ${JSON.stringify(L.prof)}`); }
+  const L=G.learnProf(r.x,r.sr,S.synth.low||40);
+  if(L.prof){ S.synth.prof=L.prof; S.synth.profN=L.notes.length; save(); dgLine(id,`✓ learnt your guitar from ${L.notes.length} notes (${L.notes.slice(0,24).map(nName).join(' ')})`); dgLine(id,`· profile ${JSON.stringify(L.prof)}${L.dark?' (very dark: mixed half and half with the general shape)':''}`); }
   else dgLine(id,`✗ only ${L.notes.length} clear single notes (needs 6): the profile stays as it was`);
   const lt=liveRun(r.x,r.sr); dgLine(id,`· tracker delay on your notes (the round trip not counted): median ${lt.med} ms, 90 % within ${lt.p90} ms; ${lt.found} of ${lt.n} attacks voiced. Here: ${lt.blk} ms per audio block on average, worst ${lt.worst} ms (budget ${lt.bud} ms)`);
   if(DG.stop) return;
@@ -1923,10 +2052,84 @@ async function t5(){ const id='t5'; if(!(await dgBasics(id))) return; await stop
   const s=S.synth, y=G.render(tr,r.sr,r.x.length/r.sr+1,s.preset,{oct:s.oct,glide:s.glide,add:s.add,room:s.room===false?0:1}), g=G.peakOf(y)>0?0.4/G.peakOf(y):0; for(let i=0;i<y.length;i++) y[i]*=g;
   const b=ctx.createBuffer(1,y.length,r.sr); b.getChannelData(0).set(y); const src=ctx.createBufferSource(); src.buffer=b; src.connect(A.mon); banner('Listen: the synth version of your chords','as a synth layer would be'); src.start(ctx.currentTime+0.2); await sleep((y.length/r.sr+0.4)*1000); banner('');
   let a=await ask('The synth version of your chords: did it play what you played?',['Yes','Mostly','Wrong notes','Nothing']); if(a<0) return; dgLine(id,`· you: offline synth ${['yes','mostly','wrong notes','nothing'][a]}`);
+  // does the live synth move the input's delay? (17 Nov: 68.1 → 137.4 ms over test 3, while it ran)
+  const r0=await rtRemeasure(); const pe2=await perfReady(); if(pe2){ dgLine(id,'✗ '+pe2); return; } const g0=E.glitch||0;
   IN.loadMax=0; preview(true,true); a=await ask(`Now play: the live synth, about ${Math.round((RT()+0.022)*1000)} ms after you (round trip ${msTxt(RT())} + tracking). Chords, single notes, a bend. How is it?`,['Playable','Late','Wrong notes','Nothing']);
-  preview(false,true); E.pv=false; prevSync(); if(a<0) return; dgLine(id,`· you: live synth ${['playable','late','wrong notes','nothing'][a]}`);
+  preview(false,true); E.pv=false; prevSync(); const gl=(E.glitch||0)-g0; const r1=await rtRemeasure(); await perfReady();
+  if(r0&&r1) dgLine(id,`${Math.abs(r1.rt-r0.rt)<0.003?'✓':'✗'} round trip before the live synth ${msTxt(r0.rt)}, after ${msTxt(r1.rt)}; the audio thread fell behind ${gl.toFixed(0)} ms in all while it ran`);
+  if(a<0) return; dgLine(id,`· you: live synth ${['playable','late','wrong notes','nothing'][a]}`);
   if(IN.loadMax) dgLine(id,`· the live synth used up to ${Math.round(IN.loadMax*100)} % of the audio thread`);
   dgLine(id,a===0?'✓ live synth playable':'✗ live synth: '+['','late','wrong notes','nothing'][a]); }
+
+// ------------------------------------------------------------------ test 6 (build 11): capture as you play
+async function t6(){ const id='t6'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
+  // can you hear what comes in on USB 2? Then the loops go there alone and the metronome stays off track 3
+  const d=ctx.destination; if(d.channelCount>=4&&A.cleanMg){ const o=ctx.createOscillator(), g=ctx.createGain(); o.frequency.value=660; g.gain.value=0; o.connect(g); g.connect(A.clean); const t=ctx.currentTime+0.1;
+    for(let i=0;i<6;i++){ g.gain.setValueAtTime(0.3,t+i*0.5); g.gain.setValueAtTime(0,t+i*0.5+0.25); } o.start(t); o.stop(t+3.2);
+    const a=await ask('Do you hear six beeps? (they go to USB 2 only)',['Yes','No']); if(a<0) return; S.tp.mon2=a===0; save(); capRoute(); dgLine(id,`· USB 2 ${a===0?'is':'is not'} heard: the loops go to ${a===0?'USB 2 alone (track 3), the metronome to USB 1 (track 2)':'USB 1 with the metronome (track 2) and USB 2 alone (track 3)'}`); }
+  else dgLine(id,`· ${d.channelCount} output channels: everything goes to USB 1 (track 2), with the metronome`);
+  const md=S.mode; S.mode='capture'; diagHide(true);
+  try{
+  if(!(await stepWait('Tap switch 6 four times','At a tempo you like.',()=>E.st==='ready'&&S.ses&&S.ses.capture&&!S.ses.secs.length,90000))) return; dgLine(id,`✓ session ready (capture), round trip ${msTxt(S.ses.rt)}`);
+  if(!(await stepWait(S.len?'Switch 1, then play':'Switch 1, play two bars, switch 1 again',S.len?`It loops after ${S.len} bar${S.len>1?'s':''} by itself.`:'',()=>E.st==='loop'&&SEC(0)&&SEC(0).layers.length>0,90000))) return;
+  dgLine(id,`${E.cap?'✓':'✗'} first loop: ${SEC(0).L.toFixed(2)} s; the TP-7 ${E.cap?'is recording':'is not recording'}`);
+  const A0=SEC(0), n1=A0.layers.length; if(!(await stepWait('Switch 1, play a second part, switch 1 to stop',S.len?'Or let it close after one time round.':'',()=>A0.layers.length>n1&&!E.rec&&!A0.layers.some(l=>l._busy),90000))) return; dgLine(id,`✓ a layer (${A0.layers.length} in all, kept without switch 6)`);
+  const top=A0.layers.filter(l=>!l.muted).sort((a,b)=>(b.created||0)-(a.created||0))[0];
+  if(!(await stepWait('Tap switch 6 once','The part you just played goes quiet.',()=>top.muted,30000))) return; let a=await ask('Did the second part go quiet?',['Yes','No']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} undo: ${a===0?'it went quiet':'you still heard it'}`);
+  if(!(await stepWait('Tap switch 6 twice quickly','It comes back.',()=>!top.muted,30000))) return; a=await ask('Is it back?',['Yes','No']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} redo`);
+  const n2=A0.layers.length; if(!(await stepWait('Play something new for one time round, without recording','Then press switch 1 twice quickly: what you just played becomes a layer.',()=>A0.layers.length>n2&&!A0.layers.some(l=>l._busy),120000))) return;
+  a=await ask('Does the new layer play what you just played, in time?',['Yes','Not in time','Wrong part']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} kept what you just played: ${['yes','not in time','wrong part'][a]}`);
+  if(!(await stepWait('Switch 2 stops','',()=>!E.cap&&E.st==='stopped',30000))) return; await sleep(1500); const c=(S.ses.caps||[]).slice(-1)[0];
+  dgLine(id,c?`✓ on the TP-7: ${c.file} (${c.secs} s)`:'✗ no TP-7 recording seen'); const f=TP.file; if(f) dgLine(id,`${f.b9>=3?'✓':'✗'} it has ${f.b9} track${f.b9>1?'s':''}${f.b9<3?' (set the record sources to line 1, USB 1 and USB 2)':''}`);
+  banner('Play the new recording on the TP-7','From the start, all tracks.'); a=await ask('On the TP-7: do you hear your loops and your live guitar?',['Both','Only loops','Only guitar','Nothing']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} TP-7 playback: ${['both','only loops','only guitar','nothing'][a]}`);
+  a=await ask('With track 2 muted on the TP-7: is the metronome gone, and the loops still there?',['Yes','Metronome still there','Loops gone too']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} track 3 alone: ${['clean','metronome still there','loops gone'][a]}`);
+  } finally { S.mode=md; save(); diagHide(false); } }
+
+// ------------------------------------------------------------------ build 11: capture song ideas quickly (after Loopy Pro and Otis McLooper)
+// Loopy Pro records the whole session as you play (Session Recording), undoes and redoes layers one at a time (loop peel), can keep
+// what you just played without having pressed record (Retrospective Recording), and closes loops by count-out. Otis McLooper records
+// a set number of bars and loops them, one press. Here:
+// - Capture (the default): the TP-7 records while you play, in normal mode: track 1 your guitar from line 1, track 2 what you hear
+//   (USB 1, with the metronome), track 3 the loops and pads without the metronome (USB 2). Nothing to print, nothing to wait for.
+//   It rolls from your first loop or Play and stops when you stop; each play-through is one TP-7 recording.
+// - Every layer is kept. Switch 6 while looping: one tap undoes the newest layer, two taps bring it back.
+// - Switch 1 twice quickly keeps what you just played: the last time round (or, before the first loop, the last bars).
+// - Loop length: free (switch 1 closes it) or 1, 2, 4 or 8 bars (one press makes the loop; a layer then records one time round).
+const capOn=()=>S.mode!=='arrange'&&!E.forceArr;
+// the tape: Start Session then Play while armed in normal mode makes a new recording of the record sources (line 1, USB 1, USB 2)
+function capStart(why){ if(!capOn()||E.cap||!TP.perf||tpProblem()) return; const t0=performance.now();
+  mNow(sxMsg(SXOP.session)); setTimeout(()=>mNow(sxMsg(SXOP.play)),80); E.cap={p0:t0+80,g0:ctx.currentTime+0.08,why};
+  log('st',`TP-7 recording started (${why})`); renderAll(); }
+async function capStop(){ if(!E.cap) return; const c=E.cap; E.cap=null; mNow(sxMsg(SXOP.stop)); const secs=(performance.now()-c.p0)/1000;
+  log('st',`TP-7 recording stopped: ${secs.toFixed(1)} s`); renderAll(); await sleep(400); const f=await tpFileNow();
+  if(f){ (S.ses.caps=S.ses.caps||[]).push({file:f.path,secs:Math.round(secs*10)/10,at:Date.now()}); save();
+    say(`On the TP-7: ${f.path.split('/').pop()} (${fmtS(secs)}).`,f.b9<3?`It has ${f.b9} track${f.b9>1?'s':''}: set the TP-7's record sources to line 1, USB 1 and USB 2 once.`:'Track 1 your guitar, 2 what you heard, 3 the loops without the metronome.'); } }
+const fmtS=s=>`${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
+// the loops and pads alone (no metronome, no count-in, no live synth) on USB 2, beside what you hear on USB 1
+function cleanBus(){ if(A.clean||!ctx) return; const d=ctx.destination; A.clean=ctx.createGain();
+  if(d.maxChannelCount<4){ log('st','2 output channels only: the loops without the metronome cannot go to USB 2'); return; }
+  try{ d.channelCount=Math.min(6,d.maxChannelCount); d.channelInterpretation='discrete'; const mg=ctx.createChannelMerger(d.channelCount), s1=ctx.createChannelSplitter(2), s2=ctx.createChannelSplitter(2), cl=ctx.createWaveShaper(); cl.curve=softCurve();
+    A.clip.disconnect(); A.clip.connect(s1); s1.connect(mg,0,0); s1.connect(mg,1,1); A.clean.connect(cl); cl.connect(s2); s2.connect(mg,0,2); s2.connect(mg,1,3); mg.connect(d);
+    A.cleanMg=mg; capRoute(); }
+  catch(e){ log('err','clean bus: '+(e&&e.message||e)); try{ A.clip.connect(d); }catch(_){} } }
+// the newest layer of the playing section that still sounds
+function peelUndo(){ const P=E.play, sec=P&&SEC(P.k); if(!sec) return; const l=sec.layers.filter(x=>x.state==='accepted'&&!x.muted).sort((a,b)=>(b.created||0)-(a.created||0))[0];
+  if(!l){ say('Nothing left to undo in this section.'); return; } l.muted=true; l.peeled=true; layerGain(l); (E.redo=E.redo||[]).push({id:l.id,k:P.k}); save();
+  log('st',`undo: ${TNAME[l.type]} on ${sec.name}`); say(`Undone: the ${TNAME[l.type].toLowerCase()} layer.`,'Tap switch 6 twice to bring it back.'); renderAll(); }
+function peelRedo(){ const r=(E.redo||[]).pop(); const sec=r&&SEC(r.k), l=sec&&sec.layers.find(x=>x.id===r.id); if(!l){ say('Nothing to bring back.'); return; }
+  l.muted=false; l.peeled=false; layerGain(l); save(); log('st',`redo: ${TNAME[l.type]} on ${sec.name}`); say(`Back: the ${TNAME[l.type].toLowerCase()} layer.`); renderAll(); }
+// switch 1 twice within 0.4 s: what you just played becomes the loop (or the layer) instead of what the first press started
+async function retro(h){ const r=E.rec; if(!r) return false; const t0=r.first?r.S0:r.h0; if(h-t0>0.4) return false;
+  if(r.first){ firstCancel(); E.cancelled=false; const bar=barS(), n=S.len||4; let e1=h;
+    if(CLK.on&&CLK.z0!=null){ const bl=CLK.z0+Math.floor((h+0.12-CLK.z0)/bar)*bar; if(bl>h-bar) e1=bl; }
+    const s0=e1-n*bar; if(!IN.ring||s0<IN.w/IN.sr-80){ say('Nothing kept: the app holds the last 80 s.'); return true; }
+    log('st',`retrospective: the last ${n} bars (${(n*bar).toFixed(2)} s) to ${e1.toFixed(2)}`); E.rec={first:true,S0:s0,via:'retro',hits:[]}; E.st='first'; E.play=null; await firstClose(e1); return true; }
+  const P=E.play; if(!P) return false; E.rec=null; const c=P.z+Math.floor((h-P.z)/P.L)*P.L; if(c-P.L<P.z){ say('Nothing kept: no whole time round yet.'); prevSync(); return true; }
+  log('st',`retrospective: the last time round (${(c-P.L).toFixed(2)} to ${c.toFixed(2)})`); E.rec={first:false,h0:c-P.L,k:P.k,z:P.z,L:P.L,hits:[],retro:true}; await layerStop(c); return true; }
+// the loops and pads: always to USB 2; to USB 1 too unless the TP-7 lets you hear USB 2 (test 6), so you never hear them twice
+function capRoute(){ if(!A.clean||!A.cleanMg) return; try{ A.loop.disconnect(); A.pads.disconnect(); }catch(e){}
+  A.loop.connect(A.clean); A.pads.connect(A.clean); if(!S.tp.mon2){ A.loop.connect(A.mon); A.pads.connect(A.mon); }
+  log('st',`outputs: ${S.tp.mon2?'the metronome and live synth on USB 1, the loops and pads on USB 2':'what you hear on USB 1, the loops and pads alone on USB 2 too'}`); }
 
 </script>
 <script>
