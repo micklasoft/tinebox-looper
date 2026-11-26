@@ -627,7 +627,7 @@ return {fft,Decim,Tracker,Catcher,onsets,transcribe,transcribeK,tidy,learnProf,k
    While you play, the TP-7 stands still and armed: the guitar then reaches the app over USB (8 Oct) and nothing records.
    Build 2 (8 Nov, your report of build 1): in edit mode, armed on line 1, you heard your guitar and the app heard it, but you did not
    hear the app. The stance is now normal mode, armed (record sources line 1, USB 1, USB 2), unless the diagnostics find otherwise. */
-const APP_BUILD='15 (26 Nov 2026)';
+const APP_BUILD='16 (26 Nov 2026)';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -650,6 +650,8 @@ try{ const j=JSON.parse(localStorage.getItem(LS)||'null'); if(j&&j.v===1){ S=Obj
   if(S.tp.loopAdj===-19&&!S.tp.loopLearnt) S.tp.loopAdj=-4.3;
   // build 11: every layer kept (switch 6 undoes), the TP-7 recording as you play
   if(!j.b11){ S.autoAccept=true; S.mode='capture'; } S.b11=true; } }catch(e){}
+// build 16: the input clipping shows in the log (26 Nov: the guitar peaked at 0 dBFS for 20 minutes, unnoticed)
+setInterval(()=>{ if(typeof IN!=='undefined'&&IN.pk>0.97&&performance.now()-(IN.clipT||0)>10000){ IN.clipT=performance.now(); log('st',`input clipping: peak ${(20*Math.log10(IN.pk)).toFixed(1)} dBFS, TP-7 gain ${S.tp.gain} dB`); toast('The input is clipping: run the level check in Diagnostics.'); } },1000);
 let saveT=null; function save(){ clearTimeout(saveT); saveT=setTimeout(saveNow,300); }
 function saveNow(){ clearTimeout(saveT); try{ localStorage.setItem(LS,JSON.stringify(S,(k,v)=>k.startsWith('_')?undefined:v)); }catch(e){} }
 window.addEventListener('pagehide',saveNow);
@@ -999,7 +1001,8 @@ function layerPlay(P,l,t){ const buf=E.bufs.get(l.id); if(!buf||!P) return; t=Ma
   const src=ctx.createBufferSource(), g=ctx.createGain(); src.buffer=buf; src.loop=true; src.loopStart=0; src.loopEnd=buf.duration; g.gain.value=gainOf(l); src.connect(g); g.connect(A.loop);
   src.start(t,phase(t,P.z,P.L)*buf.duration/P.L); srcAdd(P,l.id,{src,g,loop:true}); }
 // round 1 of a fresh loop: buffer part [p0, p1) of the loop (in seconds), played once at its place in the round starting at z
-function layerOnce(P,id,buf,p0,p1,z){ const now=ctx.currentTime+0.02; let t=z+p0, off=p0; if(t<now){ off+=now-t; t=now;
+// build 16: 5 ms margin (was 20 ms); the phone's output latency is 1 ms, base latency 1.3 ms (26 Nov)
+function layerOnce(P,id,buf,p0,p1,z){ const now=ctx.currentTime+0.005; let t=z+p0, off=p0; if(t<now){ off+=now-t; t=now;
     // build 13, test 1: how much of the loop's start the first repeat skips
     log('t1',`repeat starts ${((off-p0)*1000).toFixed(1)} ms into the loop (output latency ${msTxt(ctx.outputLatency)}, base ${msTxt(ctx.baseLatency)})`); }
   if(E.t1skip===null) E.t1skip=(off-p0)*1000; // build 14: diagnostics test 7 takes the first one after a loop closes
@@ -1093,8 +1096,10 @@ async function teach(){ if(E.teach) return; E.teach=true; renderAll();
 // build 9: -40 dBFS (was -30): a guitar straight into the TP-7 peaked at -29 to -32 dBFS on 17 Nov
 const gtrFloor=()=>Math.max(0.01,4*(S.tp.bleed!=null?S.tp.bleed:0.005));
 const hitsC=h=>h.map(x=>[Math.round(x.ph*1000)/1000,x.i,Math.round((x.v||0.9)*100)/100]);
+// build 16: a fixed-length loop closes 150 ms before its end (was 5 ms): its first repeat is scheduled ahead and starts on time.
+// The last 150 ms still go into the take (cleanTake waits for them). Phone, 26 Nov: the repeat lost 24 to 38 ms of its start.
 function firstStart(S0,via){ E.rec={first:true,S0,via:via||null,hits:[]}; E.st='first'; E.play=null; prevSync(); capStart(via==='next'?'new section':'first loop');
-  const fix=S.len?S.len*barS():0; E.capT=at(S0+(fix||CAP*barS())-(fix?0.005:0.3),()=>{ if(E.rec&&E.rec.first&&E.rec.S0===S0) firstClose(S0+(fix||CAP*barS())); });
+  const fix=S.len?S.len*barS():0; E.capT=at(S0+(fix||CAP*barS())-(fix?0.15:0.3),()=>{ if(E.rec&&E.rec.first&&E.rec.S0===S0) firstClose(S0+(fix||CAP*barS())); });
   say(S.len?`Recording ${S.len} bar${S.len>1?'s':''}: guitar, pads or both. It loops by itself.`:via==='next'?'Recording a new section: guitar, pads or both. Switch 1 closes it.':'Recording: guitar, pads or both. Switch 1 again closes the loop.',`Your guitar sounds as ${srcName()} (switch 5 swaps).`); renderAll(); }
 async function firstClose(h,_c,stopAfter){ const r=E.rec; if(!r||!r.first) return; const bar=barS(), base=bpmNow(), raw=h-r.S0;
   if(raw<0.5*bar&&!stopAfter){ say('Too soon to close: tap again at the end of your loop.'); return; }
@@ -1799,14 +1804,16 @@ const TESTS=[
   {id:'t4',hidden:true,name:'4. Sending the song: per track or in one pass',time:'about 4 minutes, automatic, one hand step on the TP-7',desc:'Compares three ways to get a song onto the TP-7, with guitar on track 1, synth on track 2 and drums on track 3 (two layers each, two sections). A: the current way, one pass per section and track. C: synth and drums in one new recording (USB 1 and 2), then the guitar in one pass. B: all three tracks in one new recording, which needs the record sources set to USB 1, USB 2 and USB 3 for that run. For each: the time it takes and where every track lands, from the playback. Keep your guitar quiet. Your current session ends.'},
   {id:'t5',hidden:true,name:'5. The synth and your guitar',time:'about 2 minutes, your guitar',desc:'Build 7 has a new tracker after Guitarcatcher: every note gets its own level and pitch, every 5.3 ms. This teaches it your guitar (15 s of single notes), measures its own delay on your notes from the recording (so the round trip is not in it), plays you the synth version of 10 s of your chords, then lets you play the live synth. You say how each sounded. Build 8: it also measures the round trip before and after the live synth, to see whether the synth moves it.'},
   {id:'t6',hidden:true,name:'6. Capture: the TP-7 records as you play',time:'about 3 minutes, your guitar and footswitch',desc:'Build 11. Checks whether the TP-7 lets you hear USB 2, then a real capture session: a loop, a layer, undo and redo on switch 6, keeping what you just played with switch 1 twice, and stop. Then you play the new TP-7 recording and say what you hear. Build 14: the TP-7 is disarmed first, so its Play plays the take instead of recording a new one.'},
-  {id:'t6p',name:'1. Capture take: TP-7 playback (plan test 6)',time:'about 1 minute (3 if there is no take yet), the TP-7',desc:'Build 13 left the TP-7 armed, so its Play recorded a new file instead of playing the take. This disarms it, then you play the newest capture take on the TP-7 and say what you hear. The rest of test 6 passed on 26 Nov.'},
-  {id:'t7',name:'2. First repeat cut (plan test 1)',time:'about 5 minutes, your guitar and footswitch',desc:'20 first loops: 10 in free length, 10 of 2 bars. Measures how far into the loop the first repeat starts. Pass: median 10 ms or less, none over 20 ms. The TP-7 does not record.'},
-  {id:'t8',name:'3. Footswitch timing against the click (plan test 2)',time:'about 5 minutes, pads and footswitch',desc:'3 runs of 8 pad taps (your baseline), then 3 runs of 16 presses of switch 1, each on the clicks. Pass: the footswitch median steady within ±5 ms, its SD at most 5 ms above the pads, at most 1 of 48 presses over 50 ms off. Your pad timing setting is kept as it was.'},
-  {id:'t9',name:'4. Press timing under load (plan test 3)',time:'about 1 minute, footswitch',desc:'The app keeps itself busy 200 ms in every 600 ms while you press switch 4 ten times. Pass: presses that land in a busy spell keep their own time.'},
+  {id:'t14',name:'1. Level and hearing check (run first)',time:'about 1 minute, your guitar',desc:'Build 16. The quiet input, the app\'s clicks coming back into the guitar input, whether you hear the clicks, and your loudest strum. Sets the TP-7 gain if the guitar clips or is too low. The other tests mean little until this passes.'},
+  {id:'t6p',name:'2. Capture take: TP-7 playback (plan test 6)',time:'about 1 minute (3 if there is no take yet), the TP-7',desc:'Build 13 left the TP-7 armed, so its Play recorded a new file instead of playing the take. Build 16: the app disarms the TP-7, plays the take itself and listens to it; you say what you hear. The rest of test 6 passed on 26 Nov.'},
+  {id:'t7',name:'3. First repeat cut (plan test 1)',time:'about 5 minutes, your guitar and footswitch',desc:'20 first loops: 10 in free length, 10 of 2 bars. Measures how far into the loop the first repeat starts. Pass: median 10 ms or less, none over 20 ms. The TP-7 does not record.'},
+  {id:'t8',name:'4. Footswitch timing against the click (plan test 2)',time:'about 5 minutes, pads and footswitch',desc:'3 runs of 8 pad taps (your baseline), then 3 runs of 16 presses of switch 1, each on the clicks. Pass: the footswitch median steady within ±5 ms, its SD at most 5 ms above the pads, at most 1 of 48 presses over 50 ms off. Your pad timing setting is kept as it was.'},
+  {id:'t9',name:'5. Press timing under load (plan test 3)',time:'about 1 minute, footswitch',desc:'The app keeps itself busy 200 ms in every 600 ms while you press switch 4 ten times. Pass: presses that land in a busy spell keep their own time.'},
   {id:'t10',hidden:true,name:'10. TP-7 file head (plan test 4)',time:'about 3 minutes, your guitar and footswitch',desc:'10 takes: switch 1 and strum at once, play about 8 s, switch 2. Compares each TP-7 file with the time from your press to Stop. Pass: 10 of 10 files cover it minus 10 ms or less. Makes 10 files on the TP-7 to delete by hand.'},
-  {id:'t11',name:'5. Layers in time as the round trip moves (plan test 7)',time:'10 minutes, your guitar and footswitch',desc:'One loop runs 10 minutes; you record a layer of muted strums each minute. The live synth runs from 3 to 6 minutes. Logs the round trip every 10 s and each layer against the metronome echo. The TP-7 does not record.'},
+  {id:'t11',hidden:true,name:'5. Layers in time as the round trip moves (plan test 7)',time:'10 minutes, your guitar and footswitch',desc:'One loop runs 10 minutes; you record a layer of muted strums each minute. The live synth runs from 3 to 6 minutes. Logs the round trip every 10 s and each layer against the metronome echo. The TP-7 does not record.'},
+  {id:'t15',name:'6. Live synth: alone and with the metronome',time:'about 1 minute, your guitar',desc:'Build 16. 10 s of chords with the app silent, then the same with the metronome running. Compares how many attacks the synth voices and how it sounded to you: does the app\'s own sound in the input spoil it?'},
   {id:'t12',hidden:true,name:'12. Double-tap windows (plan test 8)',time:'about 8 minutes, footswitch',desc:'20 tries each of: switch 6 once, switch 6 twice, switch 1 twice, switch 6 four times. The app only listens and sorts each try by its own windows (350 ms, 400 ms, four even taps). Pass: 19 of 20 for each.'},
-  {id:'t13',name:'6. Long session (plan test 9)',time:'30 minutes, your guitar and footswitch',desc:'Play normally for 15 minutes, counting your presses, then 5 and 10 minutes idle with a press after each. Checks missed and double presses, ignored bounces and the screen wake lock.'}
+  {id:'t13',hidden:true,name:'6. Long session (plan test 9)',time:'30 minutes, your guitar and footswitch',desc:'Play normally for 15 minutes, counting your presses, then 5 and 10 minutes idle with a press after each. Checks missed and double presses, ignored bounces and the screen wake lock.'}
 ];
 function diagRender(){ const d=$('#diag'); if(!d||d.hidden) return;
   d.innerHTML=`<div class="wrap"><div class="row"><h2 style="flex:1">Diagnostics <small class="note">build ${APP_BUILD}</small></h2><button type="button" class="btn" data-dg="close">Close</button></div>
@@ -1829,7 +1836,7 @@ const dgLine=(id,s)=>{ (DG.res[id]=DG.res[id]||[]).push(s); log('test',s); diagR
 async function countdown(main,sub,sec){ for(let i=sec;i>0;i--){ if(DG.stop) return false; banner(main,sub,`${i}`); await sleep(1000); } banner(''); return !DG.stop; }
 async function runTest(id){ DG.run=id; DG.stop=false; DG.res[id]=[]; DG.sx[id]=TP.sxlog=[]; diagRender(); log('app',`test ${id} started, build ${APP_BUILD}`);
   // tests 2 to 4 time the section-by-section print, so their sessions are arrangement sessions whatever Capture is set to
-  E.forceArr=['t2','t3','t4'].includes(id); try{ await ({t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11,t12,t13,t6p})[id](); }catch(err){ dgLine(id,'✗ error: '+(err&&err.stack||err)); } finally{ E.forceArr=false; }
+  E.forceArr=['t2','t3','t4'].includes(id); try{ await ({t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11,t12,t13,t6p,t14,t15})[id](); }catch(err){ dgLine(id,'✗ error: '+(err&&err.stack||err)); } finally{ E.forceArr=false; }
   TP.sxlog=null; DG.run=null; banner(''); PED.gate=null; DG.ans=null; diagRender(); }
 async function dgBasics(id){ initAudio(); const e=tpProblem(); if(e){ dgLine(id,'✗ '+e); return false; }
   const m=await sxAlive(); if(!m){ dgLine(id,'✗ The TP-7 does not answer over SysEx.'); return false; }
@@ -2141,7 +2148,7 @@ async function t6(){ const id='t6'; if(!(await dgBasics(id))) return; await stop
   dgLine(id,c?`✓ on the TP-7: ${c.file} (${c.secs} s)`:'✗ no TP-7 recording seen'); const f=TP.file; if(f) dgLine(id,`${f.b9>=3?'✓':'✗'} it has ${f.b9} track${f.b9>1?'s':''}${f.b9<3?' (set the record sources to line 1, USB 1 and USB 2)':''}`);
   // build 14: build 13 re-arms after Stop, and Play on an armed TP-7 records a new file (phone, 26 Nov: "nothing", and a new 2.35 s file)
   await tpUnperform(); dgLine(id,'· TP-7 disarmed for playback');
-  banner('Play the new recording on the TP-7','From the start, all tracks.'); a=await ask('On the TP-7: do you hear your loops and your live guitar?',['Both','Only loops','Only guitar','Nothing']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} TP-7 playback: ${['both','only loops','only guitar','nothing'][a]}`);
+  banner('Play the new recording on the TP-7','From the start, all tracks.'); a=await ask('Do you hear your loops and your live guitar from the TP-7?',['Both','Only loops','Only guitar','Nothing']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} TP-7 playback: ${['both','only loops','only guitar','nothing'][a]}`);
   a=await ask('With track 2 muted on the TP-7: is the metronome gone, and the loops still there?',['Yes','Metronome still there','Loops gone too']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} track 3 alone: ${['clean','metronome still there','loops gone'][a]}`);
   } finally { S.mode=md; save(); diagHide(false); const e=await perfReady(); if(e) log('err','after test 6: '+e); } }
 
@@ -2154,7 +2161,42 @@ async function dgSession(id){ if(E.st==='ready'&&S.ses&&S.ses.capture&&!S.ses.se
   if(!(await stepWait('Tap switch 6 four times','At a tempo you like. The metronome starts.',()=>E.st==='ready'&&S.ses&&S.ses.capture&&!S.ses.secs.length,90000))) return false;
   if(!S.metroOn){ S.metroOn=true; save(); if(!CLK.on) clkStart(clkFirst()); } dgLine(id,`· session ready at ${S.ses.bpm} bpm, round trip ${msTxt(S.ses.rt)}`); return true; }
 // back to a ready session with no sections, metronome running (the test's loops are thrown away)
-async function dgReset(){ await stopAll(true); if(S.ses){ S.ses.secs=[]; S.ses.cur=0; } E.bufs.clear(); E.raws.clear(); E.redo=[]; E.st='ready'; save(); if(!CLK.on) clkStart(clkFirst(),60/S.ses.bpm); renderAll(); }
+// build 16: back to the tempo the test started at (build 15: each free loop retimed it, 91 down to 38.6 bpm)
+async function dgReset(bpm){ await stopAll(true); if(S.ses){ S.ses.secs=[]; S.ses.cur=0; if(bpm) S.ses.bpm=bpm; } E.bufs.clear(); E.raws.clear(); E.redo=[]; E.st='ready'; save(); clkStop(); clkStart(clkFirst(),60/S.ses.bpm); renderAll(); }
+
+// build 16: level and hearing check, first in every session (26 Nov build 15 run: from test 2 on the guitar peaked at 0 dBFS and
+// the app's own sound came back at -6 to -17 dBFS, against -14 and -41 to -82 dBFS before; the TP-7 gain message never changed)
+async function tpState(){ const tr=await tpRead(0x0b), inp=await tpRead(0x0c); return `TP-7: ${tr===0xff?'normal mode':tr==null?'no answer':'edit mode, track '+(tr+1)}, edit input ${inName(inp)}, ${TP.arm&&TP.arm.v===1?'armed':'not armed'}, tape ${TP.play&&TP.play.v===1?'moving':'standing'}, gain sent ${S.tp.gain!=null?S.tp.gain+' dB':'none yet'}`; }
+async function t14(){ const id='t14'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
+  dgLine(id,'· '+await tpState()); diagHide(true);
+  try{ banner('Do not play','Measuring the quiet input.'); const floor=await peakOver(1.5); banner('');
+    banner('Listen, and do not play','Eight clicks from the app.'); const t0=ctx.currentTime; await clicksOnPair(0,8); await sleep(RT()*1000+100); banner('');
+    let echo=0; const x=inSlice(t0+0.4+RT()-0.01,t0+0.4+4+RT()); if(x) for(const v of x) echo=Math.max(echo,Math.abs(v));
+    const heard=await ask('Did you hear eight clicks?',['Yes','No','Very quiet']); if(heard<0) return;
+    let lv=0; const f=(t,y)=>{ for(let i=0;i<y.length;i++){ const v=Math.abs(y[i]); if(v>lv) lv=v; } }; IN.taps.add(f);
+    const ok=await countdown('Strum the way you play loudest','Big chords, a few times.',5); IN.taps.delete(f); if(!ok) return;
+    dgLine(id,`${floor<0.003?'✓':'✗'} quiet input: ${dB(floor)} (pass: below -50 dBFS)`);
+    dgLine(id,`${echo<0.01?'✓':'✗'} the app's clicks coming back into the guitar input: ${dB(echo)} (pass: below -40 dBFS)`);
+    dgLine(id,`${heard===0?'✓':'✗'} you hear the clicks: ${['yes','no','very quiet'][heard]}`);
+    const clip=lv>0.89, low=lv<0.06; dgLine(id,`${!clip&&!low?'✓':'✗'} guitar peak ${dB(lv)} (pass: -24 to -1 dBFS; the app aims at -12)`);
+    if(clip||low){ dgLine(id,'· setting the TP-7 gain from your playing…'); const r=await levelSet(i=>{ banner('Strum the way you play loudest','',`${i}`); }); banner('');
+      dgLine(id,r.err?`✗ gain not set: ${r.err}`:`✓ TP-7 gain ${r.from} → ${r.to} dB (peak ${dB(r.peak)} at ${r.from} dB)`); }
+    if(echo>=0.01) dgLine(id,'· the echo is the app\'s sound reaching line 1. Check: the headphone cable away from the guitar cable, and the TP-7 volume');
+    if(heard!==0) dgLine(id,'· not hearing the clicks: check the headphones are in the TP-7 and its volume. The app played them (see the echo line)');
+    dgLine(id,'· '+await tpState());
+  } finally { banner(''); diagHide(false); } }
+
+// build 16: the live synth with the app silent, then with the metronome running: does the app's own sound in the input spoil it?
+async function t15(){ const id='t15'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
+  const mo=S.metroOn, res=[]; diagHide(true);
+  try{ for(const ph of ['the app silent','the metronome running']){ const met=ph!=='the app silent'; S.metroOn=met; if(met&&!CLK.on&&S.ses) clkStart(clkFirst(),60/S.ses.bpm); if(met&&!S.ses){ dgLine(id,'· no session: tap switch 6 four times first for the metronome part'); break; }
+      E.forcePv=true; E.pvKey=null; prevSync(); const r=await capture(10,i=>{ if(DG.stop) return false; banner(`Live synth with ${ph}: play chords`,'The same chords both times.',`${i}`); }); banner('');
+      E.forcePv=false; prevSync(); if(r.err){ dgLine(id,'✗ '+r.err); return; }
+      const lt=liveRun(r.x,r.sr), pk=G.peakOf(r.x); const a=await ask(`How did the live synth sound with ${ph}?`,['Good','OK','Bad']); if(a<0) return;
+      res.push({ph,lt,pk,a}); dgLine(id,`· ${ph}: input peak ${dB(pk)}; ${lt.found} of ${lt.n} attacks voiced, tracker delay median ${lt.med} ms; you: ${['good','OK','bad'][a]}`); }
+    if(res.length===2){ const [q,m]=res, worse=m.a>q.a||(m.lt.n&&q.lt.n&&m.lt.found/m.lt.n<q.lt.found/q.lt.n-0.15);
+      dgLine(id,worse?'✗ the metronome in the input makes the live synth worse: the synth should ignore the app\'s own sound':'✓ the metronome does not spoil the live synth'); }
+  } finally { E.forcePv=false; prevSync(); S.metroOn=mo; save(); banner(''); diagHide(false); } }
 
 // build 15: test 6's playback questions alone (26 Nov: loop, layer, undo, redo and keep passed; playback failed because the TP-7 was armed)
 async function t6p(){ const id='t6p'; if(!(await dgBasics(id))) return; await stopAll(true); let c=S.ses&&S.ses.capture&&(S.ses.caps||[]).slice(-1)[0];
@@ -2163,19 +2205,25 @@ async function t6p(){ const id='t6p'; if(!(await dgBasics(id))) return; await st
       if(!(await stepWait('Switch 1, play two bars, switch 1; play along a few rounds, then switch 2','This makes the take to play back.',()=>(S.ses.caps||[]).length>k,180000))) return; c=S.ses.caps[k]; }
     finally { S.mode=md; save(); diagHide(false); } }
   dgLine(id,`· the take: ${c.file} (${c.secs} s)`); await tpUnperform(); dgLine(id,'· TP-7 disarmed for playback');
-  try{ banner('Play the newest recording on the TP-7','From the start, all tracks.'); let a=await ask('On the TP-7: do you hear your loops and your live guitar?',['Both','Only loops','Only guitar','Nothing']); if(a<0) return;
+  // build 16: the app plays the take itself (build 15: no playing notice came, the TP-7 never played) and listens for it
+  const k0=TP.file&&TP.file.path; await tpSession(); await waitFor(()=>TP.file&&TP.file.t>performance.now()-500,600,10); const kf=TP.file&&TP.file.path;
+  dgLine(id,`${kf&&kf===c.file?'✓':'✗'} the TP-7 has loaded: ${kf||'unknown'}${kf&&kf!==c.file?' (not the take)':''}`);
+  await tpToStart(); let pk=0; const tap=(t,y)=>{ for(let i=0;i<y.length;i++){ const v=Math.abs(y[i]); if(v>pk) pk=v; } }; IN.taps.add(tap); mNow(sxMsg(SXOP.play));
+  const mv=await waitFor(()=>TP.play&&TP.play.v===1,800,10); banner('Listen: the TP-7 plays the take','From the start, all tracks.'); await sleep(Math.min(8,Math.max(2,c.secs))*1000); IN.taps.delete(tap);
+  dgLine(id,`${mv?'✓':'✗'} the tape ${mv?'moved':'did not move'}; the app heard ${dB(pk)} from the TP-7 (track 1, your guitar)`);
+  try{ let a=await ask('Do you hear your loops and your live guitar from the TP-7?',['Both','Only loops','Only guitar','Nothing']); if(a<0) return;
     dgLine(id,`${a===0?'✓':'✗'} TP-7 playback: ${['both','only loops','only guitar','nothing'][a]}`);
     a=await ask('With track 2 muted on the TP-7: is the metronome gone, and the loops still there?',['Yes','Metronome still there','Loops gone too']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} track 3 alone: ${['clean','metronome still there','loops gone'][a]}`);
-  } finally { const e=await perfReady(); if(e) log('err','after test 6: '+e); } }
+  } finally { mNow(sxMsg(SXOP.stop)); TP.stopAt=performance.now(); await sleep(250); const e=await perfReady(); if(e) log('err','after test 6: '+e); } }
 
 // plan test 1: the first repeat's cut. 10 first loops in free length, 10 of 2 bars; the TP-7 does not record (no files to delete)
 async function t7(){ const id='t7'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
   const md=S.mode, ln=S.len; S.mode='capture'; diagHide(true); const res={free:[],bars:[]};
-  try{ if(!(await dgSession(id))) return; E.forceArr=true;
+  try{ if(!(await dgSession(id))) return; E.forceArr=true; const bpm0=S.ses.bpm;
     for(const kind of ['free','bars']){ S.len=kind==='bars'?2:0;
       for(let i=0;i<10&&!DG.stop;i++){ E.t1skip=null;
         const ok=await stepWait(kind==='free'?`Free loop ${i+1} of 10: switch 1, play a bar or two, switch 1 again`:`2-bar loop ${i+1} of 10: switch 1, then play`,'Strum hard on the closing press.',()=>E.st==='loop'&&E.t1skip!=null,60000);
-        if(!ok) break; res[kind].push(E.t1skip); dgLine(id,`· ${kind==='free'?'free':'2 bars'} ${i+1}: the repeat starts ${E.t1skip.toFixed(1)} ms into the loop`); await sleep(1200); await dgReset(); } }
+        if(!ok) break; res[kind].push(E.t1skip); dgLine(id,`· ${kind==='free'?'free':'2 bars'} ${i+1}: the repeat starts ${E.t1skip.toFixed(1)} ms into the loop`); await sleep(1200); await dgReset(bpm0); } }
     const all=[...res.free,...res.bars]; if(!all.length){ dgLine(id,'✗ no loops measured'); return; } const med=medOf(all), mx=Math.max(...all);
     dgLine(id,`· output latency ${msTxt(ctx.outputLatency)}, base latency ${msTxt(ctx.baseLatency)}`);
     dgLine(id,`${med<=10&&mx<=20?'✓':'✗'} first repeat cut: median ${med.toFixed(1)} ms, worst ${mx.toFixed(1)} ms over ${all.length} loops (free: median ${res.free.length?medOf(res.free).toFixed(1):'n/a'}; 2 bars: median ${res.bars.length?medOf(res.bars).toFixed(1):'n/a'}). Pass: median 10 ms or less, none over 20 ms`);
@@ -2185,6 +2233,8 @@ async function t7(){ const id='t7'; if(!(await dgBasics(id))) return; await stop
 async function t8(){ const id='t8'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
   const md=S.mode, pf=S.padFix; S.mode='capture'; diagHide(true); const pads=[], sws=[];
   try{ if(!(await dgSession(id))) return;
+    // build 16: you must hear the clicks (build 15: you did not, and pressed at 103 bpm against 96); switches do nothing during the test
+    const hc=await ask('Do you hear the metronome clicks?',['Yes','No']); if(hc!==0){ dgLine(id,'✗ the clicks are not heard: run the level check first'); return; } PED.gate=()=>false;
     for(let r=0;r<3&&!DG.stop;r++){ padCalStart(false); if(!(await stepWait(`Pads, run ${r+1} of 3: tap a pad on each of 8 clicks`,'Right on the clicks.',()=>!PADCAL.on,60000))) return; pads.push(PADCAL.last.slice());
       dgLine(id,`· pads run ${r+1}: median ${st2(medOf(PADCAL.last))}, SD ${st2(sdOf(PADCAL.last))}`); }
     for(let r=0;r<3&&!DG.stop;r++){ padCalStart(true); if(!(await stepWait(`Footswitch, run ${r+1} of 3: switch 1 on each of 16 clicks`,'Right on the clicks.',()=>!PADCAL.on,90000))) return; sws.push(PADCAL.last.slice());
@@ -2195,7 +2245,7 @@ async function t8(){ const id='t8'; if(!(await dgBasics(id))) return; await stop
     dgLine(id,`${stable?'✓':'✗'} footswitch median steady: ${meds.map(st2).join(', ')} (pass: within ±5 ms)`);
     dgLine(id,`${sdS<=sdP+0.005?'✓':'✗'} footswitch spread: SD ${st2(sdS)} against pads ${st2(sdP)} (pass: at most 5 ms more)`);
     dgLine(id,`${out<=1?'✓':'✗'} outliers: ${out} of ${all.length} presses over 50 ms from the median ${st2(m)} (pass: at most 1)`);
-  } finally { PADCAL.on=false; S.padFix=pf; S.mode=md; save(); diagHide(false); } }
+  } finally { PED.gate=null; PADCAL.on=false; S.padFix=pf; S.mode=md; save(); diagHide(false); } }
 
 // plan test 3: does a key event's timeStamp keep the press time while the app is busy?
 async function t9(){ const id='t9'; initAudio(); diagHide(true);

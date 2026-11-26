@@ -1,5 +1,19 @@
 # Tinebox-Looper
 
+## Build 16 (26 Nov 2026)
+Rollback: build 15 is commit 994ea67.
+
+From the build 15 phone run (21:01):
+- **First repeat:** a fixed-length loop now closes 150 ms before its end (was 5 ms), so its first repeat is scheduled ahead. Fake TP-7: 0.0 ms cut on 3 of 3 two-bar loops (phone: 24 to 38 ms). The repeat margin is 5 ms (was 20 ms); free loops should lose about 25 ms instead of 40. Starting them on time would move the loop against the bar grid: not done.
+- **Input level:** from test 2 on, the guitar peaked at 0 dBFS and the app's sound came back at -6 to -17 dBFS (before: -14 and -41 to -82). The app sent the same gain (CC 9 = 28, 9 dB) every time and nothing else that touches the input. The cause is not in the log. New: **1. Level and hearing check** (quiet input, echo, can you hear the clicks, loudest strum; sets the gain if it clips; logs the TP-7's mode, input, arm and tape state), and "input clipping" in the log whenever it clips.
+- **Playback test:** the app checks which file the TP-7 has loaded, plays the take itself and listens for it.
+- **Footswitch test:** asks if you hear the clicks first; the switches do nothing during it.
+- **First repeat test:** keeps the tempo it started at (build 15 slid from 91 to 38.6 bpm).
+- **New: 6. Live synth alone and with the metronome**, to see if the app's own sound in the input spoils the synth.
+- **Hidden:** the 10-minute round trip test and the 30-minute long session. The log keeps the round trip moves.
+
+Fake TP-7 checks: `sim/run.js`, `run3.js`, `run5.js` (2-bar cut, level check, synth A/B, playback). No rule breaks, no page errors.
+
 ## Build 15 (26 Nov 2026)
 Rollback: build 14 is commit 4346619.
 
