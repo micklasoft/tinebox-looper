@@ -1,5 +1,32 @@
 # Tinebox-Looper
 
+## Build 15 (26 Nov 2026)
+Rollback: build 14 is commit 4346619.
+
+Diagnostics now show only tests whose answer is still open. The settled ones are hidden (their code stays, for reference).
+
+| Shown | Plan test | Why it stays |
+|---|---|---|
+| 1. Capture take: TP-7 playback | 6 | failed on 26 Nov because the TP-7 was armed (app bug, fixed in 14); only the playback questions remain |
+| 2. First repeat cut | 1 | one loop measured 39.7 ms against a 20 ms limit |
+| 3. Footswitch timing | 2 | not run |
+| 4. Press timing under load | 3 | not run |
+| 5. Layers in time as the round trip moves | 7 | the round trip moved 71 to 123 ms and back; cause unknown |
+| 6. Long session | 9 | not run |
+
+| Hidden | Settled by |
+|---|---|
+| old 1, stance | 26 Nov: normal mode, armed is the stance; no stance gives all three |
+| old 2, printing | 26 Nov: all passed |
+| old 3, first loop | 26 Nov: all passed |
+| old 4, sending the song | 26 Nov: A and C work, B needs hand steps |
+| old 5, synth | 26 Nov: playable; its round-trip question moves to 5 |
+| old 6, capture (full) | 26 Nov: loop, layer, undo, redo, keep passed |
+| 10, TP-7 file head (plan 4) | 26 Nov phone 6 ms short (limit 10), Mac Test 5 15 of 15; every take keeps logging it (`t4`) |
+| 12, double taps (plan 8) | 26 Nov: each worked; tap gaps keep logging (`t8`) |
+| close and re-arm (plan 5) | Mac Test 5 and phone 26 Nov (221 ms); logged on every Stop (`t5`) |
+| tap tempo (plan 10) | 26 Nov: metronome 47 ms after the fourth tap; logged (`t10`) |
+
 ## Build 14 (26 Nov 2026)
 Rollback: build 13 is commit c65a7f8, build 11 is commit 98ad9e3.
 
