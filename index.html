@@ -627,7 +627,7 @@ return {fft,Decim,Tracker,Catcher,onsets,transcribe,transcribeK,tidy,learnProf,k
    While you play, the TP-7 stands still and armed: the guitar then reaches the app over USB (8 Oct) and nothing records.
    Build 2 (8 Nov, your report of build 1): in edit mode, armed on line 1, you heard your guitar and the app heard it, but you did not
    hear the app. The stance is now normal mode, armed (record sources line 1, USB 1, USB 2), unless the diagnostics find otherwise. */
-const APP_BUILD='13 (26 Nov 2026)';
+const APP_BUILD='14 (26 Nov 2026)';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -1001,7 +1001,9 @@ function layerPlay(P,l,t){ const buf=E.bufs.get(l.id); if(!buf||!P) return; t=Ma
 // round 1 of a fresh loop: buffer part [p0, p1) of the loop (in seconds), played once at its place in the round starting at z
 function layerOnce(P,id,buf,p0,p1,z){ const now=ctx.currentTime+0.02; let t=z+p0, off=p0; if(t<now){ off+=now-t; t=now;
     // build 13, test 1: how much of the loop's start the first repeat skips
-    log('t1',`repeat starts ${((off-p0)*1000).toFixed(1)} ms into the loop (output latency ${msTxt(ctx.outputLatency)}, base ${msTxt(ctx.baseLatency)})`); } if(off>=p1) return;
+    log('t1',`repeat starts ${((off-p0)*1000).toFixed(1)} ms into the loop (output latency ${msTxt(ctx.outputLatency)}, base ${msTxt(ctx.baseLatency)})`); }
+  if(E.t1skip===null) E.t1skip=(off-p0)*1000; // build 14: diagnostics test 7 takes the first one after a loop closes
+  if(off>=p1) return;
   const src=ctx.createBufferSource(), g=ctx.createGain(); src.buffer=buf; src.connect(g); g.connect(A.loop); src.start(t,off,p1-off); srcAdd(P,id,{src,g}); }
 function layerSilence(P,id,t,fade){ const a=P&&P.srcs.get(id); if(!a) return; t=Math.max(t,ctx.currentTime);
   a.forEach(s=>{ try{ s.g.gain.cancelScheduledValues(t); s.g.gain.setValueAtTime(s.g.gain.value,t); s.g.gain.linearRampToValueAtTime(0,t+(fade||0.01)); s.src.stop(t+(fade||0.01)+0.01); }catch(e){} }); P.srcs.delete(id); }
@@ -1076,7 +1078,7 @@ async function measureRT(){ const w0=(IN.openAt||0)+3000-performance.now(); if(w
 const gtrType=()=>S.src==='syn'?'syn':'gtr';
 const srcName=()=>S.src==='syn'?`${(G.PRESETS[S.synth.preset]||{name:'synth'}).name} synth`:'raw guitar';
 // the live synth runs on the Sounds tab (strum to hear the sound) and, if set, while a pass records with the synth chosen
-function prevSync(){ const busy=['printing','tape','prep'].includes(E.st), want=S.src==='syn'&&!!IN.node&&!busy&&((E.tab==='Snd'&&S.sndPrev!==false)||(!!E.rec&&!!S.synth.preview)), key=[S.synth.preset,S.synth.oct,S.synth.add,S.synth.glide,S.synth.room,S.synth.profN,S.synth.low,JSON.stringify(liveKey())].join(':');
+function prevSync(){ const busy=['printing','tape','prep'].includes(E.st), want=(!!E.forcePv&&!!IN.node)||S.src==='syn'&&!!IN.node&&!busy&&((E.tab==='Snd'&&S.sndPrev!==false)||(!!E.rec&&!!S.synth.preview)), key=[S.synth.preset,S.synth.oct,S.synth.add,S.synth.glide,S.synth.room,S.synth.profN,S.synth.low,JSON.stringify(liveKey())].join(':');
   if(want!==!!E.pv||(want&&key!==E.pvKey)){ E.pv=want; E.pvKey=key; preview(want,true); } }
 // "Teach it your guitar" (build 7): sec seconds of what comes in, from now; the harmonic shape of your guitar from its single notes
 async function capture(sec,tick){ if(!(await openInput())) return {err:'no audio input'}; const t0=ctx.currentTime+0.05;
@@ -1235,7 +1237,7 @@ const PADCAL={on:false,hits:[],sw:false,n:8};
 // build 13, test 2: the same with switch 1 (16 presses); it only measures and logs, it sets no correction
 function padCalStart(sw){ if(!CLK.on||!S.metroOn){ toast('Start a session or a loop with the metronome on first.'); return; } PADCAL.on=true; PADCAL.hits=[]; PADCAL.sw=!!sw; PADCAL.n=sw?16:8;
   if(sw){ say('Footswitch timing: press switch 1 on each of the next 16 clicks.'); renderAll(); return; } say('Pad timing: tap a pad on each of the next 8 clicks.'); renderAll(); }
-function padCalDone(){ PADCAL.on=false; const b=beatS(), off=PADCAL.hits.map(h=>{ const n=Math.round((h-CLK.z0)/b); return h-(CLK.z0+n*b); }), m=medOf(off);
+function padCalDone(){ PADCAL.on=false; const b=beatS(), off=PADCAL.hits.map(h=>{ const n=Math.round((h-CLK.z0)/b); return h-(CLK.z0+n*b); }), m=medOf(off); PADCAL.last=off;
   const mean=off.reduce((x,y)=>x+y,0)/off.length, sd=Math.sqrt(off.reduce((x,y)=>x+(y-mean)**2,0)/off.length), out=off.filter(v=>Math.abs(v-m)>0.05).length;
   log('t2',`${PADCAL.sw?'footswitch':'pads'}: offsets ${off.map(v=>Math.round(v*1000)).join(', ')} ms; median ${Math.round(m*1000)} ms, SD ${(sd*1000).toFixed(1)} ms, ${out} over 50 ms from the median`);
   if(PADCAL.sw){ say(`Footswitch timing: median ${Math.round(m*1000)} ms from the clicks, SD ${(sd*1000).toFixed(1)} ms.`,'Logged. Run it 3 times, then copy or share the log.'); renderAll(); return; }
@@ -1526,6 +1528,7 @@ const typing=t=>!!(t&&t.matches&&(t.matches('textarea,[contenteditable="true"]')
   PED.down[i]=1; PED.kd[i]=now; setTimeout(()=>{ if(PED.down[i]&&performance.now()-PED.kd[i]>=120){ PED.down[i]=0; } },140);
   sw(i,e,'key'); },true));
 function sw(i,ev,src){ log('in',`switch ${i+1}${src==='key'?'':' (screen)'}`);
+  if(PED.onPress) PED.onPress(i);
   if(PADCAL.on&&PADCAL.sw){ if(i===0){ PADCAL.hits.push(p2h(evT(ev))); if(PADCAL.hits.length>=PADCAL.n) padCalDone(); else renderAll(); } return; }
   if(LOADT.on){ if(i===3) loadPress(ev); return; }
   if(PED.gate&&!PED.gate(i,ev)) return; if(i===5) return six(ev); act(SW_ACT[i],ev); }
@@ -1554,6 +1557,8 @@ function renderScreen(){ const st=$('#scState'), sm=$('#scSmall'), ti=$('#scTitl
   const p=pending().length; if(p) ch.push(`<span class="chip bad">${p} to keep or drop</span>`);
   const q=toPrint().length; if(q) ch.push(`<span class="chip">${q} to print</span>`);
   if(IN.stream) ch.push(`<span class="chip ${IN.pk>0.003?'on':''}">in ${IN.pk>3e-5?Math.round(20*Math.log10(IN.pk))+' dB':'silent'}</span>`);
+  // build 14: an armed TP-7 records on its own Play
+  if(!E.cap&&TP.arm&&TP.arm.v===1&&!DG.run) ch.push(`<span class="chip">TP-7 armed: its ▶ records</span>`);
   if(E.cap) ch.push(`<span class="chip rec">● TP-7 ${fmtS((performance.now()-(E.cap.p0||performance.now()))/1000)}</span>`);
   const h=ch.join(''); if(h!==E.chipsH){ $('#scChips').innerHTML=h; E.chipsH=h; } }
 setInterval(()=>{ const p=$('#scPos'); if(!p) return; const t=posTxt(); if(p.textContent!==t) p.textContent=t; p.classList.toggle('rec',!!(E.rec||E.st==='first'));
@@ -1793,7 +1798,14 @@ const TESTS=[
   {id:'t3',name:'3. Your first loop, start to finish',time:'about 3 minutes, your guitar and footswitch',desc:'A real session with prompts: four taps for the tempo, a guitar loop, a synth layer, keep both, stop, the print, then the TP-7 plays it back. You say how each step sounded. Run it after test 1 has passed.'},
   {id:'t4',name:'4. Sending the song: per track or in one pass',time:'about 4 minutes, automatic, one hand step on the TP-7',desc:'Compares three ways to get a song onto the TP-7, with guitar on track 1, synth on track 2 and drums on track 3 (two layers each, two sections). A: the current way, one pass per section and track. C: synth and drums in one new recording (USB 1 and 2), then the guitar in one pass. B: all three tracks in one new recording, which needs the record sources set to USB 1, USB 2 and USB 3 for that run. For each: the time it takes and where every track lands, from the playback. Keep your guitar quiet. Your current session ends.'},
   {id:'t5',name:'5. The synth and your guitar',time:'about 2 minutes, your guitar',desc:'Build 7 has a new tracker after Guitarcatcher: every note gets its own level and pitch, every 5.3 ms. This teaches it your guitar (15 s of single notes), measures its own delay on your notes from the recording (so the round trip is not in it), plays you the synth version of 10 s of your chords, then lets you play the live synth. You say how each sounded. Build 8: it also measures the round trip before and after the live synth, to see whether the synth moves it.'},
-  {id:'t6',name:'6. Capture: the TP-7 records as you play',time:'about 3 minutes, your guitar and footswitch',desc:'Build 11. Checks whether the TP-7 lets you hear USB 2, then a real capture session: a loop, a layer, undo and redo on switch 6, keeping what you just played with switch 1 twice, and stop. Then you play the new TP-7 recording and say what you hear.'}
+  {id:'t6',name:'6. Capture: the TP-7 records as you play',time:'about 3 minutes, your guitar and footswitch',desc:'Build 11. Checks whether the TP-7 lets you hear USB 2, then a real capture session: a loop, a layer, undo and redo on switch 6, keeping what you just played with switch 1 twice, and stop. Then you play the new TP-7 recording and say what you hear. Build 14: the TP-7 is disarmed first, so its Play plays the take instead of recording a new one.'},
+  {id:'t7',name:'7. First repeat cut (plan test 1)',time:'about 5 minutes, your guitar and footswitch',desc:'20 first loops: 10 in free length, 10 of 2 bars. Measures how far into the loop the first repeat starts. Pass: median 10 ms or less, none over 20 ms. The TP-7 does not record.'},
+  {id:'t8',name:'8. Footswitch timing against the click (plan test 2)',time:'about 5 minutes, pads and footswitch',desc:'3 runs of 8 pad taps (your baseline), then 3 runs of 16 presses of switch 1, each on the clicks. Pass: the footswitch median steady within ±5 ms, its SD at most 5 ms above the pads, at most 1 of 48 presses over 50 ms off. Your pad timing setting is kept as it was.'},
+  {id:'t9',name:'9. Press timing under load (plan test 3)',time:'about 1 minute, footswitch',desc:'The app keeps itself busy 200 ms in every 600 ms while you press switch 4 ten times. Pass: presses that land in a busy spell keep their own time.'},
+  {id:'t10',name:'10. TP-7 file head (plan test 4)',time:'about 3 minutes, your guitar and footswitch',desc:'10 takes: switch 1 and strum at once, play about 8 s, switch 2. Compares each TP-7 file with the time from your press to Stop. Pass: 10 of 10 files cover it minus 10 ms or less. Makes 10 files on the TP-7 to delete by hand.'},
+  {id:'t11',name:'11. Layers in time as the round trip moves (plan test 7)',time:'10 minutes, your guitar and footswitch',desc:'One loop runs 10 minutes; you record a layer of muted strums each minute. The live synth runs from 3 to 6 minutes. Logs the round trip every 10 s and each layer against the metronome echo. The TP-7 does not record.'},
+  {id:'t12',name:'12. Double-tap windows (plan test 8)',time:'about 8 minutes, footswitch',desc:'20 tries each of: switch 6 once, switch 6 twice, switch 1 twice, switch 6 four times. The app only listens and sorts each try by its own windows (350 ms, 400 ms, four even taps). Pass: 19 of 20 for each.'},
+  {id:'t13',name:'13. Long session (plan test 9)',time:'30 minutes, your guitar and footswitch',desc:'Play normally for 15 minutes, counting your presses, then 5 and 10 minutes idle with a press after each. Checks missed and double presses, ignored bounces and the screen wake lock.'}
 ];
 function diagRender(){ const d=$('#diag'); if(!d||d.hidden) return;
   d.innerHTML=`<div class="wrap"><div class="row"><h2 style="flex:1">Diagnostics <small class="note">build ${APP_BUILD}</small></h2><button type="button" class="btn" data-dg="close">Close</button></div>
@@ -1816,7 +1828,7 @@ const dgLine=(id,s)=>{ (DG.res[id]=DG.res[id]||[]).push(s); log('test',s); diagR
 async function countdown(main,sub,sec){ for(let i=sec;i>0;i--){ if(DG.stop) return false; banner(main,sub,`${i}`); await sleep(1000); } banner(''); return !DG.stop; }
 async function runTest(id){ DG.run=id; DG.stop=false; DG.res[id]=[]; DG.sx[id]=TP.sxlog=[]; diagRender(); log('app',`test ${id} started, build ${APP_BUILD}`);
   // tests 2 to 4 time the section-by-section print, so their sessions are arrangement sessions whatever Capture is set to
-  E.forceArr=['t2','t3','t4'].includes(id); try{ await ({t1,t2,t3,t4,t5,t6})[id](); }catch(err){ dgLine(id,'✗ error: '+(err&&err.stack||err)); } finally{ E.forceArr=false; }
+  E.forceArr=['t2','t3','t4'].includes(id); try{ await ({t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11,t12,t13})[id](); }catch(err){ dgLine(id,'✗ error: '+(err&&err.stack||err)); } finally{ E.forceArr=false; }
   TP.sxlog=null; DG.run=null; banner(''); PED.gate=null; DG.ans=null; diagRender(); }
 async function dgBasics(id){ initAudio(); const e=tpProblem(); if(e){ dgLine(id,'✗ '+e); return false; }
   const m=await sxAlive(); if(!m){ dgLine(id,'✗ The TP-7 does not answer over SysEx.'); return false; }
@@ -2057,7 +2069,7 @@ function diagReport(){ const L=[`Tinebox Loop diagnostics, ${new Date().toLocale
   `Settings: ${JSON.stringify({tp:S.tp,synth:S.synth,padFix:S.padFix,printOnStop:S.printOnStop,metroOn:S.metroOn,lv:S.lv,src:S.src,loopBars:S.loopBars,countIn:S.countIn})}`,
   `Round trip moves seen this page load: ${JSON.stringify((E.rtSeen||[]).map(q=>[+q[0].toFixed(1),+(q[1]*1000).toFixed(1),q[2]]))}; audio thread behind: ${(E.glitch||0).toFixed(0)} ms in all`,''];
   TESTS.forEach(t=>{ if(!DG.res[t.id]) return; L.push(`== ${t.name}`,...DG.res[t.id]); const sx=DG.sx[t.id]; if(sx&&sx.length){ const t0=sx[0].t; L.push('-- TP-7 messages',...sx.map(x=>`  ${((x.t-t0)/1000).toFixed(3).padStart(8)} ${x.s}`)); } L.push(''); });
-  L.push('== Log',logText(300)); return L.join('\n'); }
+  L.push('== Log',logText()); return L.join('\n'); }
 
 // ================================================================== start
 (function start(){
@@ -2126,9 +2138,118 @@ async function t6(){ const id='t6'; if(!(await dgBasics(id))) return; await stop
   a=await ask('Does the new layer play what you just played, in time?',['Yes','Not in time','Wrong part']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} kept what you just played: ${['yes','not in time','wrong part'][a]}`);
   if(!(await stepWait('Switch 2 stops','',()=>!E.cap&&E.st==='stopped',30000))) return; await sleep(1500); const c=(S.ses.caps||[]).slice(-1)[0];
   dgLine(id,c?`✓ on the TP-7: ${c.file} (${c.secs} s)`:'✗ no TP-7 recording seen'); const f=TP.file; if(f) dgLine(id,`${f.b9>=3?'✓':'✗'} it has ${f.b9} track${f.b9>1?'s':''}${f.b9<3?' (set the record sources to line 1, USB 1 and USB 2)':''}`);
+  // build 14: build 13 re-arms after Stop, and Play on an armed TP-7 records a new file (phone, 26 Nov: "nothing", and a new 2.35 s file)
+  await tpUnperform(); dgLine(id,'· TP-7 disarmed for playback');
   banner('Play the new recording on the TP-7','From the start, all tracks.'); a=await ask('On the TP-7: do you hear your loops and your live guitar?',['Both','Only loops','Only guitar','Nothing']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} TP-7 playback: ${['both','only loops','only guitar','nothing'][a]}`);
   a=await ask('With track 2 muted on the TP-7: is the metronome gone, and the loops still there?',['Yes','Metronome still there','Loops gone too']); if(a<0) return; dgLine(id,`${a===0?'✓':'✗'} track 3 alone: ${['clean','metronome still there','loops gone'][a]}`);
-  } finally { S.mode=md; save(); diagHide(false); } }
+  } finally { S.mode=md; save(); diagHide(false); const e=await perfReady(); if(e) log('err','after test 6: '+e); } }
+
+// ================================================================== build 14: the phone tests of the test plan (26 Nov), as diagnostics
+// Each one names its plan test and pass mark, and writes every measurement into the report.
+const st2=v=>(v*1000).toFixed(1)+' ms';
+const sdOf=a=>{ if(!a.length) return 0; const m=a.reduce((x,y)=>x+y,0)/a.length; return Math.sqrt(a.reduce((x,y)=>x+(y-m)**2,0)/a.length); };
+// a capture session at a tempo you tap, unless one is ready with nothing in it
+async function dgSession(id){ if(E.st==='ready'&&S.ses&&S.ses.capture&&!S.ses.secs.length&&CLK.on) return true;
+  if(!(await stepWait('Tap switch 6 four times','At a tempo you like. The metronome starts.',()=>E.st==='ready'&&S.ses&&S.ses.capture&&!S.ses.secs.length,90000))) return false;
+  if(!S.metroOn){ S.metroOn=true; save(); if(!CLK.on) clkStart(clkFirst()); } dgLine(id,`· session ready at ${S.ses.bpm} bpm, round trip ${msTxt(S.ses.rt)}`); return true; }
+// back to a ready session with no sections, metronome running (the test's loops are thrown away)
+async function dgReset(){ await stopAll(true); if(S.ses){ S.ses.secs=[]; S.ses.cur=0; } E.bufs.clear(); E.raws.clear(); E.redo=[]; E.st='ready'; save(); if(!CLK.on) clkStart(clkFirst(),60/S.ses.bpm); renderAll(); }
+
+// plan test 1: the first repeat's cut. 10 first loops in free length, 10 of 2 bars; the TP-7 does not record (no files to delete)
+async function t7(){ const id='t7'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
+  const md=S.mode, ln=S.len; S.mode='capture'; diagHide(true); const res={free:[],bars:[]};
+  try{ if(!(await dgSession(id))) return; E.forceArr=true;
+    for(const kind of ['free','bars']){ S.len=kind==='bars'?2:0;
+      for(let i=0;i<10&&!DG.stop;i++){ E.t1skip=null;
+        const ok=await stepWait(kind==='free'?`Free loop ${i+1} of 10: switch 1, play a bar or two, switch 1 again`:`2-bar loop ${i+1} of 10: switch 1, then play`,'Strum hard on the closing press.',()=>E.st==='loop'&&E.t1skip!=null,60000);
+        if(!ok) break; res[kind].push(E.t1skip); dgLine(id,`· ${kind==='free'?'free':'2 bars'} ${i+1}: the repeat starts ${E.t1skip.toFixed(1)} ms into the loop`); await sleep(1200); await dgReset(); } }
+    const all=[...res.free,...res.bars]; if(!all.length){ dgLine(id,'✗ no loops measured'); return; } const med=medOf(all), mx=Math.max(...all);
+    dgLine(id,`· output latency ${msTxt(ctx.outputLatency)}, base latency ${msTxt(ctx.baseLatency)}`);
+    dgLine(id,`${med<=10&&mx<=20?'✓':'✗'} first repeat cut: median ${med.toFixed(1)} ms, worst ${mx.toFixed(1)} ms over ${all.length} loops (free: median ${res.free.length?medOf(res.free).toFixed(1):'n/a'}; 2 bars: median ${res.bars.length?medOf(res.bars).toFixed(1):'n/a'}). Pass: median 10 ms or less, none over 20 ms`);
+  } finally { E.forceArr=false; S.len=ln; S.mode=md; save(); diagHide(false); } }
+
+// plan test 2: where the app places a press against the click. Pads 3 × 8 (your baseline), then switch 1 3 × 16
+async function t8(){ const id='t8'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
+  const md=S.mode, pf=S.padFix; S.mode='capture'; diagHide(true); const pads=[], sws=[];
+  try{ if(!(await dgSession(id))) return;
+    for(let r=0;r<3&&!DG.stop;r++){ padCalStart(false); if(!(await stepWait(`Pads, run ${r+1} of 3: tap a pad on each of 8 clicks`,'Right on the clicks.',()=>!PADCAL.on,60000))) return; pads.push(PADCAL.last.slice());
+      dgLine(id,`· pads run ${r+1}: median ${st2(medOf(PADCAL.last))}, SD ${st2(sdOf(PADCAL.last))}`); }
+    for(let r=0;r<3&&!DG.stop;r++){ padCalStart(true); if(!(await stepWait(`Footswitch, run ${r+1} of 3: switch 1 on each of 16 clicks`,'Right on the clicks.',()=>!PADCAL.on,90000))) return; sws.push(PADCAL.last.slice());
+      dgLine(id,`· footswitch run ${r+1}: median ${st2(medOf(PADCAL.last))}, SD ${st2(sdOf(PADCAL.last))}; offsets ${PADCAL.last.map(v=>Math.round(v*1000)).join(', ')} ms`); }
+    if(sws.length<3||pads.length<3) return;
+    const meds=sws.map(medOf), stable=Math.max(...meds)-Math.min(...meds)<=0.010, all=sws.flat(), m=medOf(all), out=all.filter(v=>Math.abs(v-m)>0.05).length;
+    const sdP=sdOf(pads.flat()), sdS=sdOf(all);
+    dgLine(id,`${stable?'✓':'✗'} footswitch median steady: ${meds.map(st2).join(', ')} (pass: within ±5 ms)`);
+    dgLine(id,`${sdS<=sdP+0.005?'✓':'✗'} footswitch spread: SD ${st2(sdS)} against pads ${st2(sdP)} (pass: at most 5 ms more)`);
+    dgLine(id,`${out<=1?'✓':'✗'} outliers: ${out} of ${all.length} presses over 50 ms from the median ${st2(m)} (pass: at most 1)`);
+  } finally { PADCAL.on=false; S.padFix=pf; S.mode=md; save(); diagHide(false); } }
+
+// plan test 3: does a key event's timeStamp keep the press time while the app is busy?
+async function t9(){ const id='t9'; initAudio(); diagHide(true);
+  try{ loadStart(); if(!(await stepWait('Press switch 4 ten times, spread out','The screen stutters: the app is busy 200 ms in every 600 ms.',()=>!LOADT.on,120000))){ if(LOADT.on) loadDone(); return; }
+    const r=LOADT.res; r.forEach((x,i)=>dgLine(id,`· press ${i+1}: handled ${Math.round(x.gap)} ms after its timestamp${x.inBlock?', timestamp inside a busy spell':''}`));
+    const late=r.filter(x=>x.gap>=20), real=late.filter(x=>x.inBlock).length;
+    dgLine(id,real>=2&&real===late.length?`✓ the timestamp is the press time: ${real} presses landed in a busy spell and kept their own time`:late.length&&real<late.length?`✗ ${late.length-real} late presses carry the time the app got to them`:real===1?'· only 1 press landed in a busy spell: run it again':'✗ no press kept a time inside a busy spell: the timestamps are the time the app got to them (or every press missed the busy spells: run it again)');
+  } finally { diagHide(false); } }
+
+// plan test 4: does the TP-7 file hold the press? 10 takes: switch 1, strum at once, play about 8 s, switch 2
+async function t10(){ const id='t10'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
+  const md=S.mode, ln=S.len; S.mode='capture'; S.len=0; diagHide(true); let pass=0, n=0;
+  try{ if(!(await dgSession(id))) return;
+    for(let i=0;i<10&&!DG.stop;i++){ const k=(E.takes||[]).length;
+      if(!(await stepWait(`Take ${i+1} of 10: switch 1 and strum at once, play about 8 s, then switch 2`,'',()=>(E.takes||[]).length>k,90000))) break;
+      const t=E.takes[k]; n++; if(!t.file){ dgLine(id,`✗ take ${i+1}: no new TP-7 file`); continue; } const short=t.pressToStop-t.fileMs; if(short<=10) pass++;
+      dgLine(id,`${short<=10?'✓':'✗'} take ${i+1}: press to Play ${t.pressToPlay} ms, Play to first position ${t.playToM!=null?t.playToM+' ms':'n/a'}, file ${t.fileMs} ms, press to Stop ${t.pressToStop} ms: ${short>0?short+' ms short':'covers it'}`);
+      await dgReset(); }
+    if(n) dgLine(id,`${pass===n&&n===10?'✓':'✗'} file head: ${pass} of ${n} takes cover press to Stop minus 10 ms or less (pass: 10 of 10)`);
+    dgLine(id,'· delete these test takes on the TP-7 by hand');
+  } finally { S.len=ln; S.mode=md; save(); diagHide(false); } }
+
+// plan test 7: do layers stay in time as the round trip moves? 10 minutes looping; the live synth on from 3 to 6 minutes;
+// one muted-strum layer each minute. The round trip the app follows is logged every 10 s.
+async function t11(){ const id='t11'; if(!(await dgBasics(id))) return; await stopAll(true); const pe=await perfReady(); if(pe){ dgLine(id,'✗ '+pe); return; }
+  const md=S.mode; S.mode='capture'; diagHide(true); const rts=[], t0=performance.now(); let iv=null;
+  try{ if(!(await dgSession(id))) return; E.forceArr=true;
+    if(!(await stepWait('Switch 1, play two bars of muted strums on the beat, switch 1','This loop runs for 10 minutes.',()=>E.st==='loop'&&SEC(0)&&SEC(0).layers.length>0,90000))) return;
+    const A0=SEC(0); let last=RT(); iv=setInterval(()=>{ const r=RT(), m=(performance.now()-t0)/60000; rts.push([m,r]); if(Math.abs(r-last)>0.002) log('t7',`round trip ${msTxt(r)} at ${m.toFixed(2)} min (was ${msTxt(last)})`); last=r; },10000);
+    for(let min=1;min<=10&&!DG.stop;min++){
+      if(min===4){ E.forcePv=true; E.pvKey=null; prevSync(); dgLine(id,'· 3 min: live synth on'); }
+      if(min===7){ E.forcePv=false; prevSync(); dgLine(id,'· 6 min: live synth off'); }
+      const n=A0.layers.length; if(!(await stepWait(`Minute ${min} of 10: switch 1, one time round of muted strums on the beat, switch 1`,min>=4&&min<7?'The live synth is on.':'',()=>A0.layers.length>n&&!E.rec&&!A0.layers.some(l=>l._busy),75000))) break;
+      const l=A0.layers[A0.layers.length-1]; dgLine(id,`· minute ${min}: layer recorded, round trip ${msTxt(RT())}${l.shift?`, moved ${msTxt(l.shift)}`:''}`);
+      await waitFor(()=>DG.stop||(performance.now()-t0)>=min*60000,60000,200); }
+    const by=(a,b)=>rts.filter(x=>x[0]>=a&&x[0]<b).map(x=>x[1]), ph=[['0 to 3 min (synth off)',0,3],['3 to 6 min (synth on)',3,6],['6 to 10 min (synth off)',6,10]];
+    ph.forEach(([n,a,b])=>{ const v=by(a,b); if(v.length) dgLine(id,`· ${n}: round trip ${msTxt(Math.min(...v))} to ${msTxt(Math.max(...v))}`); });
+    dgLine(id,'· each layer\'s check against the metronome echo is in the log ("metronome echo in the take", "round trip moved"). Pass: the jump lines up with one cause, the app follows within 1 round, each layer within 10 ms of the click');
+  } finally { clearInterval(iv); E.forcePv=false; prevSync(); E.forceArr=false; S.mode=md; save(); await dgReset(); diagHide(false); } }
+
+// plan test 8: the double-tap windows. The app only listens here (nothing happens): 20 tries of each action, sorted by the app's rules
+async function t12(){ const id='t12'; initAudio(); diagHide(true);
+  const kinds=[['switch 6 once (undo)',5,1],['switch 6 twice quickly (redo)',5,2],['switch 1 twice quickly (keep what you played)',0,2],['switch 6 four times, steady (new session)',5,4]];
+  try{ for(const [name,sw,want] of kinds){ let good=0, n=0; const gaps=[];
+      for(let i=0;i<20&&!DG.stop;i++){ const taps=[]; let done=null; banner(`${name}: try ${i+1} of 20`,'Then wait.');
+        PED.gate=(k,ev)=>{ if(k===sw) taps.push(evT(ev)); return false; };
+        await waitFor(()=>DG.stop||(taps.length&&performance.now()-taps[taps.length-1]>(want===4?2100:900)),30000,20); PED.gate=null; if(DG.stop||!taps.length) break;
+        const g=taps.slice(1).map((t,j)=>t-taps[j]); gaps.push(...g); n++;
+        // the app's rules: switch 6 double within 350 ms, switch 1 again within 400 ms, four taps each under 2 s and even within 25 %
+        if(want===1) done=taps.length===1; else if(want===2) done=taps.length===2&&g[0]<(sw===0?400:350);
+        else done=taps.length===4&&Math.max(...g)<2000&&Math.max(...g)<=1.25*Math.min(...g);
+        if(done) good++; log('t8',`${name}: ${taps.length} tap${taps.length>1?'s':''}${g.length?`, gaps ${g.map(Math.round).join(', ')} ms`:''}: ${done?'as meant':'not as meant'}`); }
+      banner(''); if(!n) return; dgLine(id,`${good>=19&&n===20?'✓':'✗'} ${name}: ${good} of ${n} as meant${gaps.length?`; gaps median ${Math.round(medOf(gaps))} ms, ${Math.round(Math.min(...gaps))} to ${Math.round(Math.max(...gaps))} ms`:''} (pass: 19 of 20)`); }
+  } finally { PED.gate=null; banner(''); diagHide(false); } }
+
+// plan test 9: 30 minutes. Counts every press, checks the wake lock, and asks for a press after 5 and 10 minutes idle
+async function t13(){ const id='t13'; initAudio(); diagHide(true); const cnt=[0,0,0,0,0,0], b0=LOG.filter(x=>/bounce ignored/.test(x[2])).length; let wl=0, wn=0;
+  PED.onPress=i=>{ cnt[i]++; }; const iv=setInterval(()=>{ wn++; if(E.wake&&!E.wake.released) wl++; },60000);
+  try{ if(!(await countdown('Play normally for about 15 minutes','Count your presses, or film your foot. Tap Stop under the tests to end early.',900))) return;
+    for(const m of [5,10]){ if(!(await countdown(`Leave everything idle for ${m} minutes`,'Do not touch the phone or the footswitch.',m*60))) return;
+      const k=cnt[1]; const ok=await stepWait('Now press switch 2 once','',()=>cnt[1]>k,60000); dgLine(id,`${ok?'✓':'✗'} first press after ${m} min idle: ${ok?'registered':'not seen in 60 s'}`); }
+    const a=await ask(`The app counted ${cnt.reduce((x,y)=>x+y,0)} presses (${cnt.map((c,i)=>`${i+1}: ${c}`).join(', ')}). Does that match your count?`,['Yes','Fewer than I pressed','More than I pressed']); if(a<0) return;
+    const b=LOG.filter(x=>/bounce ignored/.test(x[2])).length-b0;
+    dgLine(id,`${a===0?'✓':'✗'} presses: ${['all counted','some missed','some counted twice'][a]} (${cnt.join(', ')} per switch)`); dgLine(id,`· bounces ignored: ${b}`);
+    dgLine(id,`${wn&&wl===wn?'✓':'✗'} screen wake lock held in ${wl} of ${wn} minutes`);
+  } finally { PED.onPress=null; clearInterval(iv); diagHide(false); } }
+
 
 // ------------------------------------------------------------------ build 11: capture song ideas quickly (after Loopy Pro and Otis McLooper)
 // Loopy Pro records the whole session as you play (Session Recording), undoes and redoes layers one at a time (loop peel), can keep
@@ -2160,7 +2281,7 @@ function capStart(why){ if(!capOn()||E.cap||tpProblem()) return; if(!TP.perf&&!E
 // Session so the next take needs only Play. Stop to re-armed was 198 to 210 ms in Test 5.
 const CAP_GAP=150;
 async function capStop(){ if(!E.cap) return; const c=E.cap; E.cap=null; if(c.p0==null){ log('st','TP-7: take cancelled before Play went out'); renderAll(); return; }
-  const tS=performance.now(); TP.stopAt=tS; TP.playAt=null; mNow(sxMsg(SXOP.stop)); const secs=(tS-c.p0)/1000;
+  const tS=performance.now(), pm=TP.firstM!=null&&TP.playAt!=null?Math.round(TP.firstM-TP.playAt):null; TP.stopAt=tS; TP.playAt=null; mNow(sxMsg(SXOP.stop)); const secs=(tS-c.p0)/1000;
   log('st',`TP-7 recording stopped: ${secs.toFixed(1)} s`); renderAll();
   const job=(async()=>{ TP.perf=false; await sleep(CAP_GAP); const tD=performance.now(); mNow([0xB0,14,0]);
     const a0=await waitFor(()=>TP.arm&&TP.arm.v===0&&TP.arm.t>=tD,1500,5), tA0=performance.now();
@@ -2169,6 +2290,7 @@ async function capStop(){ if(!E.cap) return; const c=E.cap; E.cap=null; if(c.p0=
     const tR=performance.now(); mNow([0xB0,14,127]); const a1=await waitFor(()=>TP.arm&&TP.arm.v===1&&TP.arm.t>=tR,1500,5);
     if(a1){ await tpSession(); TP.perf=true; } else log('err','TP-7 did not report armed again after the take');
     log('t5',`close and re-arm: Stop to armed = 0 ${a0?Math.round(tA0-tS)+' ms':'not seen'}, file ${f?via:'none new'}, Stop to armed again ${a1?Math.round(performance.now()-tS)+' ms':'not seen'}`);
+    const tk={pressToPlay:Math.round(c.p0-c.press),playToM:pm,pressToStop:Math.round(tS-c.press),fileMs:f?Math.round(f.frames/Math.max(1,f.sr)*1000):null,file:f?f.path:null}; (E.takes=E.takes||[]).push(tk);
     if(!f){ log('err','no new TP-7 file for this take (Play alone may not start a new recording)'); say('The TP-7 reported no new recording for this take.','Copy the log into our chat.'); return; }
     const fs=f.frames/Math.max(1,f.sr);
     log('t4',`take: press to Play ${Math.round(c.p0-c.press)} ms, file ${(fs*1000).toFixed(0)} ms, Play to Stop ${Math.round(tS-c.p0)} ms, press to Stop ${Math.round(tS-c.press)} ms`);

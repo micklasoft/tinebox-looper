@@ -1,5 +1,29 @@
 # Tinebox-Looper
 
+## Build 14 (26 Nov 2026)
+Rollback: build 13 is commit c65a7f8, build 11 is commit 98ad9e3.
+
+From the build 13 phone run (26 Nov, 20:26):
+- **Test 6 fix:** the TP-7 is disarmed before you play the take back. Build 13 left it armed, so the TP-7's Play recorded a new 2.35 s file instead of playing the take ("nothing", "loops gone"). It is armed again afterwards.
+- **On screen:** a chip "TP-7 armed: its ▶ records" whenever the TP-7 is armed and not recording a take.
+- **Report and Share log** now hold the whole log (2000 lines), not the last 300.
+
+**New diagnostics, one per phone test in the test plan** (each prints the plan's pass mark and a ✓ or ✗):
+| Diagnostic | Plan test | Time |
+|---|---|---|
+| 7. First repeat cut | 1 | 5 min |
+| 8. Footswitch timing against the click | 2 | 5 min |
+| 9. Press timing under load | 3 | 1 min |
+| 10. TP-7 file head | 4 | 3 min (10 TP-7 files to delete) |
+| 11. Layers in time as the round trip moves | 7 | 10 min |
+| 12. Double-tap windows | 8 | 8 min |
+| 13. Long session | 9 | 30 min |
+
+Plan test 5 ran on the Mac (Test 5). Plan test 6 is diagnostics 6. Plan test 10 is in the log (`t10` lines: fourth tap to metronome) after any four-tap session. Plan test 11 needs MTP and your OK.
+Suggested order: 9, 8, 7, 10, 6, 12, then 11 and 13 when you have time.
+
+**Fake TP-7 checks** (`sim/`): `run.js` capture (4 play-throughs, 4 files), `run2.js` arrangement path and the timing tools, `run3.js` diagnostics 7, 9, 10 and 12. All pass on build 14 with no rule breaks.
+
 ## Build 13 (26 Nov 2026)
 Rollback: build 11 is commit 98ad9e3 (https://github.com/micklasoft/tinebox-looper/commit/98ad9e3).
 
