@@ -627,7 +627,7 @@ return {fft,Decim,Tracker,Catcher,onsets,transcribe,transcribeK,tidy,learnProf,k
    While you play, the TP-7 stands still and armed: the guitar then reaches the app over USB (8 Oct) and nothing records.
    Build 2 (8 Nov, your report of build 1): in edit mode, armed on line 1, you heard your guitar and the app heard it, but you did not
    hear the app. The stance is now normal mode, armed (record sources line 1, USB 1, USB 2), unless the diagnostics find otherwise. */
-const APP_BUILD='11 (17 Nov 2026)';
+const APP_BUILD='13 (26 Nov 2026)';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -656,9 +656,9 @@ window.addEventListener('pagehide',saveNow);
 
 // the log: presses, what they did, what the TP-7 reported; kept across reloads
 const LOG=(()=>{ try{ return JSON.parse(localStorage.getItem(LS+'-log')||'[]'); }catch(e){ return []; } })(); let logDirty=false;
-function log(k,txt){ LOG.push([Date.now(),k,String(txt).slice(0,240)]); if(LOG.length>600) LOG.splice(0,LOG.length-600); logDirty=true; }
+function log(k,txt){ LOG.push([Date.now(),k,String(txt).slice(0,240)]); if(LOG.length>2000) LOG.splice(0,LOG.length-2000); logDirty=true; }
 setInterval(()=>{ if(logDirty){ logDirty=false; try{ localStorage.setItem(LS+'-log',JSON.stringify(LOG)); }catch(e){} } },3000);
-function logText(n){ const L=LOG.slice(-(n||600)); let t0=null; return L.map(([t,k,x])=>{ if(k==='app'||t0==null) t0=t; return k==='app'?`— ${x}`:`  +${((t-t0)/1000).toFixed(2).padStart(8)} s  ${k.padEnd(5)} ${x}`; }).join('\n'); }
+function logText(n){ const L=LOG.slice(-(n||2000)); let t0=null; return L.map(([t,k,x])=>{ if(k==='app'||t0==null) t0=t; return k==='app'?`— ${x}`:`  +${((t-t0)/1000).toFixed(3).padStart(9)} s  ${k.padEnd(5)} ${x}`; }).join('\n'); }
 
 const IDB={db:null,
   open(){ if(IDB.p) return IDB.p; return IDB.p=new Promise(res=>{ try{ const r=indexedDB.open('tinebox-loop',1); r.onupgradeneeded=()=>{ r.result.createObjectStore('a'); }; r.onsuccess=()=>{ IDB.db=r.result; res(true); }; r.onerror=()=>res(false); }catch(e){ res(false); } }); },
@@ -745,7 +745,7 @@ async function openInput(){
   catch(e){ toast('Audio input was blocked ('+e.name+').'); log('err','audio input blocked: '+e.name); return false; }
   const tr=IN.stream.getAudioTracks()[0]; if(tr) tr.addEventListener('ended',()=>{ IN.stale=true; });
   IN.sr=ctx.sampleRate; const bits=IN.sr>60000?23:22; IN.ring=new Float32Array(1<<bits); IN.mask=(1<<bits)-1; IN.w=-1e15;
-  IN.src=ctx.createMediaStreamSource(IN.stream); IN.kind='';
+  IN.openAt=performance.now(); IN.src=ctx.createMediaStreamSource(IN.stream); IN.kind='';
   if(ctx.audioWorklet&&window.AudioWorkletNode){ const code=WORKLET();
     for(const url of [URL.createObjectURL(new Blob([code],{type:'application/javascript'})),'data:application/javascript;base64,'+btoa(unescape(encodeURIComponent(code)))]){
       try{ await ctx.audioWorklet.addModule(url); IN.kind='worklet'; break; }catch(e){ log('err','worklet: '+(e&&e.message||e)); } } }
@@ -881,10 +881,15 @@ function midiIn(ev,port){ const d=[...ev.data], now=evT(ev);
   if(/tp.?7/i.test(port)&&!/blue/i.test(port)&&d[0]===0xF0){ sxLog('in',d,now); TP.listeners.forEach(f=>{ try{ f(d,now); }catch(e){} });
     const p=sxParse(d); if(!p) return; if(p.debug){ log('err','TP-7 debug frame: '+p.text); return; }
     if(p.kind==='event'&&p.cmd===0x7F){ const v=p.v;
-      if(v[0]===0x4D&&v.length>=5){ TP.pos=u32le(v,1); TP.posLog.push([now,TP.pos]); if(TP.posLog.length>3000) TP.posLog.splice(0,1500); }
+      if(v[0]===0x4D&&v.length>=5){ TP.pos=u32le(v,1); TP.posLog.push([now,TP.pos]); if(TP.posLog.length>3000) TP.posLog.splice(0,1500);
+        if(TP.playAt!=null&&TP.firstM==null){ TP.firstM=now; log('tp',`first position ${TP.pos} ms, ${Math.round(now-TP.playAt)} ms after Play`); } }
       else if(v[0]===0x4F){ const o=TP.arm; TP.arm={v:v[1],t:now}; if(!o||o.v!==v[1]) log('tp',`armed = ${v[1]}`); }
       else if(v[0]===0x4E){ const o=TP.play; TP.play={v:v[1],t:now}; if(!o||o.v!==v[1]) log('tp',`playing = ${v[1]}`); }
-      else if(v[0]===0x4B){ TP.file=sxFile(d); } }
+      // build 13: the arrival time, so a new file can be told from the one Start Session reports (Test 5, 26 Nov: Start Session
+      // always reports the newest closed file, even an old one)
+      else if(v[0]===0x4B){ const f=sxFile(d); if(f){ f.t=now; TP.file=f; log('tp',`file: ${fileTxt(f)}`); } } }
+    // build 13 (as build 12): the replies to Play and Stop carry the playing state (N); on the Mac the N notice came only there
+    if(p.kind==='resp'&&p.cmd===0x7F&&p.v[0]===0x4E&&p.v.length>=2){ const o=TP.play; TP.play={v:p.v[1],t:now}; if(!o||o.v!==p.v[1]) log('tp',`playing = ${p.v[1]} (reply)`); }
     if(p.kind==='resp'&&p.cmd===0x01){ const o={}; asc(p.v).split(';').forEach(kv=>{ const i=kv.indexOf(':'); if(i>0) o[kv.slice(0,i).replace(/^[^a-z]+/i,'')]=kv.slice(i+1); }); if(o.product) TP.info=o; }
     return; }
   if(port&&!/tp.?7/i.test(port)) PED.midi&&PED.midi(d,port); }
@@ -895,9 +900,11 @@ async function tpRead(op){ const r=await sxAsk(0x7F,[op],500); return r&&!r.st&&
 const tpEditRead=()=>tpRead(0x0b); // ff = not in edit mode, otherwise the selected track (25 Oct)
 async function tpSetEdit(on){ const v=await tpEditRead(); if(v!=null&&(v!==0xff)===on) return {sent:false,after:v};
   // build 10: asks every 60 ms from 200 ms on instead of waiting 700 ms, and logs how long the TP-7 took (to learn its real time)
-  mNow([0xB0,14,0]); mNow(sxMsg(SXOP.edit)); const t0=performance.now(); await sleep(200); let a=null;
-  for(let i=0;i<12;i++){ a=await tpEditRead(); if(a!=null&&(a!==0xff)===on) break; await sleep(60); }
-  const ok=a!=null&&(a!==0xff)===on; if(ok) await sleep(80); log('st',`edit mode ${on?'on':'off'}: ${ok?'':'not seen after '}${Math.round(performance.now()-t0)} ms`); return {sent:true,after:a}; }
+  // build 13 (build 12's rule, 20 Nov): reads at once and every 20 ms up to 0.9 s (the toggle took 3 to 4 ms on the Mac, 19 Nov).
+  // The 80 ms margin after it is gone (build 12 had 30 ms); not tested on the TP-7: the phone tests check it.
+  mNow([0xB0,14,0]); mNow(sxMsg(SXOP.edit)); const t0=performance.now(); let a=null;
+  while(performance.now()-t0<900){ a=await tpEditRead(); if(a!=null&&(a!==0xff)===on) break; await sleep(20); }
+  const ok=a!=null&&(a!==0xff)===on; log('st',`edit mode ${on?'on':'off'}: ${ok?'':'not seen after '}${Math.round(performance.now()-t0)} ms`); return {sent:true,after:a}; }
 async function tpSel(track,input){ const a=await sxAsk(0x7F,[0x09,track],400); if(!(a&&!a.st)) return false; const b=await sxAsk(0x7F,[0x0a,input],400); if(!(b&&!b.st)) return false; TP.trk=track; TP.inp=input; return true; }
 // track first, input once the track took (31 Oct: a refused track change put the input on the wrong track); wait for armed = 0 first
 async function tpSelSafe(track,input){ if(TP.arm&&TP.arm.v===1){ TP.perf=false; mNow([0xB0,14,0]); } await waitFor(()=>!TP.arm||TP.arm.v===0,600,10);
@@ -905,6 +912,8 @@ async function tpSelSafe(track,input){ if(TP.arm&&TP.arm.v===1){ TP.perf=false; 
   log('err',`the TP-7 did not take track ${track+1}, ${inName(input)}`); return false; }
 async function tpEditTo(track,input){ const ed=await tpSetEdit(true); if(ed.after==null) return 'The TP-7 does not answer.'; if(ed.after===0xff) return 'Edit mode did not come on.';
   return (await tpSelSafe(track,input))?'':`The TP-7 did not take track ${track+1}, ${inName(input)}.`; }
+// build 13: the TP-7 sends its notices (armed, position, file) only after Start Session (Test 5, 26 Nov). Waits for the reply, not a timer.
+async function tpSession(){ TP.sesAt=performance.now(); return sxAsk(0x7F,[SXOP.session],400); }
 async function tpPosNow(){ TP.pos=null; mNow(sxMsg(SXOP.session)); await sleep(300); return TP.pos==null?0:TP.pos; }
 async function tpFileNow(){ TP.file=null; mNow(sxMsg(SXOP.session)); await waitFor(()=>!!TP.file,1500); return TP.file; }
 // back to the start: 0x4a (24 Oct: also in edit mode, where stop does not rewind; 18 of 18), checked by the position it reports
@@ -924,10 +933,12 @@ async function tpCue(n){ mNow([0xB0,17,0]); mNow([0x90,n,100]); await sleep(90);
 // build 9: the TP-7's line 1 gain, 0 to 42 dB, by CC 9 on channel 1 (Tinebox, 14 Oct: 10 and 30 dB sent showed +9 and +29 dB).
 // A guitar straight into the TP-7 came in near -30 dBFS at the gain it had (17 Nov); with the Mustang Micro before it, near -9.
 function tpGain(db){ if(db==null) return; db=Math.max(0,Math.min(42,Math.round(db))); S.tp.gain=db; save(); if(!R.midi||!R.outId) return; mNow([0xB0,9,Math.min(127,Math.ceil(db*128/42))]); log('st',`TP-7 input gain set to ${db} dB`); }
-async function tpPerform(){ const e=tpProblem(); if(e) return e; if(S.tp.gain!=null) tpGain(S.tp.gain); tpRelease(); mNow([0xB0,17,0]); mNow(sxMsg(SXOP.stop)); await sleep(120);
+// build 13: waits for the reply to Stop instead of 120 ms (not tested on the TP-7: the phone tests check it); Start Session before
+// arming, so the armed notice comes (Test 5), and again once armed, so the next take needs only Play (capStart)
+async function tpPerform(){ const e=tpProblem(); if(e) return e; if(S.tp.gain!=null) tpGain(S.tp.gain); tpRelease(); mNow([0xB0,17,0]); TP.stopAt=performance.now(); await sxAsk(0x7F,[SXOP.stop],400); await tpSession();
   if(S.tp.stance==='edit'){ const r=await tpEditTo(0,TPIN.line1); if(r) return r; }
   else { const ed=await tpSetEdit(false); if(ed.after==null) return 'The TP-7 does not answer.'; if(ed.after!==0xff) return 'Edit mode did not go off.'; }
-  if(!(await tpArm(true))) return 'The TP-7 did not report armed.'; TP.perf=true; TP.stance=S.tp.stance; return ''; }
+  if(!(await tpArm(true))) return 'The TP-7 did not report armed.'; await tpSession(); TP.perf=true; TP.stance=S.tp.stance; return ''; }
 // a cue note held for TP-7 playback (Sections) is let go before anything else
 function tpRelease(){ if(TP.held!=null){ mNow([0x80,TP.held,0]); TP.held=null; } }
 async function tpUnperform(){ TP.perf=false; if(TP.arm&&TP.arm.v===0) return true; return tpArm(false); }
@@ -988,7 +999,9 @@ function layerPlay(P,l,t){ const buf=E.bufs.get(l.id); if(!buf||!P) return; t=Ma
   const src=ctx.createBufferSource(), g=ctx.createGain(); src.buffer=buf; src.loop=true; src.loopStart=0; src.loopEnd=buf.duration; g.gain.value=gainOf(l); src.connect(g); g.connect(A.loop);
   src.start(t,phase(t,P.z,P.L)*buf.duration/P.L); srcAdd(P,l.id,{src,g,loop:true}); }
 // round 1 of a fresh loop: buffer part [p0, p1) of the loop (in seconds), played once at its place in the round starting at z
-function layerOnce(P,id,buf,p0,p1,z){ const now=ctx.currentTime+0.02; let t=z+p0, off=p0; if(t<now){ off+=now-t; t=now; } if(off>=p1) return;
+function layerOnce(P,id,buf,p0,p1,z){ const now=ctx.currentTime+0.02; let t=z+p0, off=p0; if(t<now){ off+=now-t; t=now;
+    // build 13, test 1: how much of the loop's start the first repeat skips
+    log('t1',`repeat starts ${((off-p0)*1000).toFixed(1)} ms into the loop (output latency ${msTxt(ctx.outputLatency)}, base ${msTxt(ctx.baseLatency)})`); } if(off>=p1) return;
   const src=ctx.createBufferSource(), g=ctx.createGain(); src.buffer=buf; src.connect(g); g.connect(A.loop); src.start(t,off,p1-off); srcAdd(P,id,{src,g}); }
 function layerSilence(P,id,t,fade){ const a=P&&P.srcs.get(id); if(!a) return; t=Math.max(t,ctx.currentTime);
   a.forEach(s=>{ try{ s.g.gain.cancelScheduledValues(t); s.g.gain.setValueAtTime(s.g.gain.value,t); s.g.gain.linearRampToValueAtTime(0,t+(fade||0.01)); s.src.stop(t+(fade||0.01)+0.01); }catch(e){} }); P.srcs.delete(id); }
@@ -1004,7 +1017,7 @@ function envOf(y,n){ const out=new Array(n).fill(0), m=y.length/n; for(let j=0;j
 async function prepSession(bpm,tapZ){ const e=tpProblem(); if(e){ say(e); return; } initAudio(); if(!ctx) return;
   if(['prep','printing'].includes(E.st)) return; await stopAll(true); E.st='prep'; const G0=++E.gen; say(`New session at ${Math.round(bpm)} bpm: checking the TP-7…`,'');
   const gone=()=>G0!==E.gen, fail=m=>{ if(!gone()){ E.st=S.ses&&S.ses.secs.length?'stopped':'idle'; say(m); } log('err',m); return m; };
-  if(!(await tpAlive())) return fail('The TP-7 does not answer over MIDI. Check the cable, then Settings, Connect.');
+  if(!(await tpAlive())) return fail('The TP-7 does not answer over MIDI. Check the cable, then Settings, Connect.'); await tpSession();
   if(!(await openInput())) return fail('No audio input: the app cannot hear the guitar.');
   // build 11, capture: no recording to make first (the first loop or Play starts one), so only the stance and the round trip
   if(capOn()){ let rt={rt:S.tp.rt[setupKey()]!=null?S.tp.rt[setupKey()]:null,stored:true}, r;
@@ -1012,7 +1025,7 @@ async function prepSession(bpm,tapZ){ const e=tpProblem(); if(e){ say(e); return
       rt=await measureRT(); await tpArm(false); if(gone()) return; if(rt.rt!=null) S.tp.rt[setupKey()]=rt.rt; else log('err',`round trip not measured (${rt.why})`); }
     r=await tpPerform(); if(r) return fail(r); if(gone()) return;
     S.ses={id:uid(),bpm:Math.round(bpm*10)/10,created:Date.now(),file:null,fileEnd:0,cues:{},secs:[],cur:0,rt:rt.rt!=null?rt.rt:RT(),capture:true,caps:[]}; save(); E.rtOK=null;
-    E.bufs.clear(); E.raws.clear(); E.st='ready'; clkStart(tapZ!=null?alignBar(tapZ):clkFirst()); log('st',`session ready (capture): ${S.ses.bpm} bpm, round trip ${msTxt(S.ses.rt)}${rt.stored?' (from the last session)':''}`);
+    E.bufs.clear(); E.raws.clear(); E.st='ready'; clkStart(tapZ!=null?alignBar(tapZ):clkFirst()); if(tapZ!=null&&TAP.at4!=null) log('t10',`metronome runs ${Math.round(performance.now()-TAP.at4)} ms after the fourth tap, ${S.ses.bpm} bpm`); log('st',`session ready (capture): ${S.ses.bpm} bpm, round trip ${msTxt(S.ses.rt)}${rt.stored?' (from the last session)':''}`);
     say(`Ready at ${S.ses.bpm} bpm.`,`Switch 1 starts a loop${S.len?` of ${S.len} bar${S.len>1?'s':''}`:''}; the TP-7 records from then on. Twice quickly keeps what you just played.`); renderAll(); return; }
   say(`New session at ${Math.round(bpm)} bpm: making a new TP-7 recording…`);
   // 1. half a second in normal mode with the app silent: a new recording with one track per record source (line 1, USB 1, USB 2)
@@ -1021,7 +1034,9 @@ async function prepSession(bpm,tapZ){ const e=tpProblem(); if(e){ say(e); return
   // reports, its cue set on the way) and arms there, as every later section does. The reports also give the start lag here.
   A.master.gain.value=0; let T=ctx.currentTime+0.5; const Pp=audioToPerf(T)+midiOffset(); midiSend([0xB0,14,127],T-0.35); midiSend(sxMsg(SXOP.session),T-0.25); midiSend(sxMsg(SXOP.play),T); midiSend(sxMsg(SXOP.stop),T+2.0); midiSend([0xB0,14,0],T+2.05);
   await sleepTo(T+2.2); A.master.gain.value=1; const xc=inSlice(T,T+2.15), cpk=xc?G.peakOf(xc):1; const lf=posFit(Pp-50,0); if(lf.n>=3){ (S.tp.lag=S.tp.lag||{}).normal=Math.round(lf.c-Pp); log('st',`start lag (normal mode): ${S.tp.lag.normal} ms`); }
-  await sleep(400); if(gone()) return; const f=await tpFileNow(); if(gone()) return;
+  // build 13: the file closes on the disarm and its K notice follows about 40 ms later (Test 5, 26 Nov, 15 of 15): wait for it
+  // instead of 400 ms; Start Session (which reports the newest closed file) only if it does not come
+  let f=null; await waitFor(()=>TP.file&&TP.file.t>=Pp+1900&&(f=TP.file),1000,5); if(gone()) return; if(!f) f=await tpFileNow(); if(gone()) return;
   // build 10 (17 Nov: waiting before a new session): the wipe only if the guitar played into those 2 s (the app hears line 1 while the
   // TP-7 records it), and then with the first print, which goes into edit mode anyway. The round trip from the last session on
   // this audio setup: the metronome's echo checks it from the first take on (build 8). Measured only the first time on a setup.
@@ -1035,11 +1050,14 @@ async function prepSession(bpm,tapZ){ const e=tpProblem(); if(e){ say(e); return
   E.bufs.clear(); E.raws.clear(); E.st='ready';
   const w=[]; if(!f) w.push('The TP-7 sent no file notice.'); else if(f.b9<3) w.push(`The new recording has ${f.b9} track${f.b9>1?'s':''}: set the TP-7's record sources to line 1, USB 1 and USB 2 once.`);
   if(rt.rt==null) w.push(`Round trip not measured (${rt.why}); takes may sit off the beat.`);
-  clkStart(tapZ!=null?alignBar(tapZ):clkFirst()); log('st',`session ready: ${S.ses.bpm} bpm, ${fileTxt(f)}, round trip ${msTxt(S.ses.rt)}${rt.stored?' (from the last session; the metronome echo checks it)':''}`);
+  clkStart(tapZ!=null?alignBar(tapZ):clkFirst()); if(tapZ!=null&&TAP.at4!=null) log('t10',`metronome runs ${Math.round(performance.now()-TAP.at4)} ms after the fourth tap, ${S.ses.bpm} bpm`); log('st',`session ready: ${S.ses.bpm} bpm, ${fileTxt(f)}, round trip ${msTxt(S.ses.rt)}${rt.stored?' (from the last session; the metronome echo checks it)':''}`);
   say(`Ready at ${S.ses.bpm} bpm.`,`${w.join(' ')} Switch 1 records a loop: guitar, pads or both. Round trip ${msTxt(S.ses.rt)}.`); renderAll(); }
 const clkFirst=()=>ctx.currentTime+0.1;
 // clicks out through USB 1, back through the TP-7's track 1 monitor: graph time out → graph time in
-async function measureRT(){ const n=5, base=ctx.currentTime+0.2, step=0.3, sr=ctx.sampleRate; const was=S.metroOn; S.metroOn=false; const out=[];
+// build 13 (as build 12): the round trip stepped about 1 s after the stream opened on the Mac (19 Nov): measure once the input has
+// been open 3 s. A kept wait: it costs about 1.6 s on the first session after a page load.
+async function measureRT(){ const w0=(IN.openAt||0)+3000-performance.now(); if(w0>0){ log('st',`round trip: waiting ${Math.round(w0)} ms for the input to settle`); await sleep(w0); }
+  const n=5, base=ctx.currentTime+0.2, step=0.3, sr=ctx.sampleRate; const was=S.metroOn; S.metroOn=false; const out=[];
   for(let i=0;i<n;i++){ const t=base+i*step, o=ctx.createOscillator(), g=ctx.createGain(); o.frequency.value=1000; g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.25,t+0.0005); g.gain.setValueAtTime(0.25,t+0.004); g.gain.linearRampToValueAtTime(0,t+0.005); o.connect(g); g.connect(A.test); o.start(t); o.stop(t+0.01); out.push(t); }
   await sleepTo(base+n*step+0.5); S.metroOn=was; const res=[];
   for(const t of out){ const x=inSlice(t-0.05,t+0.45); if(!x){ continue; } const k0=Math.round(0.05*sr); let fl=0; for(let i=0;i<k0;i++) fl=Math.max(fl,Math.abs(x[i]));
@@ -1203,7 +1221,7 @@ async function synthLayer(l,k){ let raw=E.raws.get(l.id); if(!raw){ const d=awai
 
 // ------------------------------------------------------------------ drums: what you play on the pads, as hits on the loop
 function padHit(i,ev){ initAudio(); const now=ctx.currentTime; drumNow(i,now,0.9);
-  if(PADCAL.on){ PADCAL.hits.push(p2h(evT(ev))); if(PADCAL.hits.length>=8) padCalDone(); return; }
+  if(PADCAL.on&&!PADCAL.sw){ PADCAL.hits.push(p2h(evT(ev))); if(PADCAL.hits.length>=8) padCalDone(); return; }
   const r=E.rec; if(r&&r.first){ const h=p2h(evT(ev))-(S.padFix||0)/1000; if(h>=r.S0-0.05) r.hits.push({t:h,i,v:0.9}); return; }
   if(r&&E.play){ const P=E.play, fix=(S.padFix||0)/1000, h=p2h(evT(ev))-fix; let ph=phase(h,P.z,P.L);
     if(S.quant){ const q=barS()/S.quant*4; ph=(Math.round(ph/q)*q)%P.L; } const rr=Math.floor((h-P.z)/P.L); r.hits.push({ph,i,v:0.9,r:rr,n:1}); } }
@@ -1213,9 +1231,14 @@ async function renderDrums(hits,L){ const sr=ctx.sampleRate, N=Math.round(L*sr),
   const rb=await new Promise(res=>{ const p=oc.startRendering(); if(p&&p.then) p.then(res); else oc.oncomplete=e=>res(e.renderedBuffer); }), z=rb.getChannelData(0);
   for(let i=0;i<N;i++) y[i]=z[i]; for(let i=N;i<z.length;i++) y[(i-N)%N]+=z[i]; return y; }
 // pad timing: tap any pad on 8 clicks; the median offset from the beat is the touch and output delay
-const PADCAL={on:false,hits:[]};
-function padCalStart(){ if(!CLK.on||!S.metroOn){ toast('Start a session or a loop with the metronome on first.'); return; } PADCAL.on=true; PADCAL.hits=[]; say('Pad timing: tap a pad on each of the next 8 clicks.'); renderAll(); }
+const PADCAL={on:false,hits:[],sw:false,n:8};
+// build 13, test 2: the same with switch 1 (16 presses); it only measures and logs, it sets no correction
+function padCalStart(sw){ if(!CLK.on||!S.metroOn){ toast('Start a session or a loop with the metronome on first.'); return; } PADCAL.on=true; PADCAL.hits=[]; PADCAL.sw=!!sw; PADCAL.n=sw?16:8;
+  if(sw){ say('Footswitch timing: press switch 1 on each of the next 16 clicks.'); renderAll(); return; } say('Pad timing: tap a pad on each of the next 8 clicks.'); renderAll(); }
 function padCalDone(){ PADCAL.on=false; const b=beatS(), off=PADCAL.hits.map(h=>{ const n=Math.round((h-CLK.z0)/b); return h-(CLK.z0+n*b); }), m=medOf(off);
+  const mean=off.reduce((x,y)=>x+y,0)/off.length, sd=Math.sqrt(off.reduce((x,y)=>x+(y-mean)**2,0)/off.length), out=off.filter(v=>Math.abs(v-m)>0.05).length;
+  log('t2',`${PADCAL.sw?'footswitch':'pads'}: offsets ${off.map(v=>Math.round(v*1000)).join(', ')} ms; median ${Math.round(m*1000)} ms, SD ${(sd*1000).toFixed(1)} ms, ${out} over 50 ms from the median`);
+  if(PADCAL.sw){ say(`Footswitch timing: median ${Math.round(m*1000)} ms from the clicks, SD ${(sd*1000).toFixed(1)} ms.`,'Logged. Run it 3 times, then copy or share the log.'); renderAll(); return; }
   const sp=Math.max(...off)-Math.min(...off); if(sp>0.08){ say('Pad timing: your taps were too uneven to tell.',`They spread over ${Math.round(sp*1000)} ms. Try again, tapping right on the clicks.`); renderAll(); return; } if(m<-0.03||m>0.12){ say(`Pad timing: your taps sat ${Math.round(m*1000)} ms from the clicks, too far to be the screen's delay.`,'Try again, tapping right on the clicks.'); renderAll(); return; }
   S.padFix=Math.round(m*1000); save(); log('st',`pad timing: offsets ${off.map(v=>Math.round(v*1000)).join(', ')} ms → ${S.padFix} ms`);
   say(`Pad timing set: hits move ${S.padFix} ms earlier.`,`Your taps spread over ${Math.round(sp*1000)} ms.`); renderAll(); }
@@ -1429,7 +1452,7 @@ function tapeSecAt(pos){ const ses=S.ses; if(!ses) return -1; const t=pos/1000; 
 // (double tap); with nothing to keep, four taps of 6 start a new session.
 const SW_ACT=['rec','play','prev','next','src','six'];
 async function act(a,ev,hh){ initAudio(); if(!ctx) return; if(ctx.state!=='running') try{ await ctx.resume(); }catch(e){}
-  const h=hh!=null?hh:p2h(evT(ev)); log('do',`${a} (${E.st}${E.rec?', recording':''})`); requestWake();
+  const h=hh!=null?hh:p2h(evT(ev)); E.pressT=ev?evT(ev):performance.now(); log('do',`${a} (${E.st}${E.rec?', recording':''})`); requestWake();
   try{ await act2(a,h); }catch(err){ log('err',`${a}: ${err&&err.stack||err}`); say('Error: '+(err&&err.message||err)); } renderAll(); }
 async function act2(a,h){ const st=E.st, ses=S.ses;
   if(a==='rec'||a==='gtr'||a==='syn'){
@@ -1461,18 +1484,30 @@ async function act2(a,h){ const st=E.st, ses=S.ses;
 const SIX={n:0,t:null};
 // build 11: while looping, with nothing to keep or drop: a tap undoes the newest layer, two taps bring it back; a tap while recording
 // cancels that recording
-function six(ev){ if(!newestPending()&&(E.st==='loop'||E.st==='first')){ if(E.rec){ SIX.n=0; if(E.rec.first){ firstCancel(); if(E.cap&&!S.ses.secs.length) capStop(); return; } E.rec=null; prevSync(); say('Layer cancelled.'); renderAll(); return; }
+function six(ev){ const tz=evT(ev); if(SIX.last!=null&&tz-SIX.last<1500) log('t8',`switch 6 tap ${Math.round(tz-SIX.last)} ms after the last`); SIX.last=tz; if(!newestPending()&&(E.st==='loop'||E.st==='first')){ if(E.rec){ SIX.n=0; if(E.rec.first){ firstCancel(); if(E.cap&&!S.ses.secs.length) capStop(); return; } E.rec=null; prevSync(); say('Layer cancelled.'); renderAll(); return; }
     SIX.n++; clearTimeout(SIX.t); if(SIX.n>=2){ SIX.n=0; peelRedo(); return; } SIX.t=setTimeout(()=>{ SIX.n=0; peelUndo(); },350); return; }
   if(newestPending()){ SIX.n++; clearTimeout(SIX.t); if(SIX.n>=2){ SIX.n=0; act('drop',ev); return; } SIX.t=setTimeout(()=>{ SIX.n=0; act('keep'); },350); return; }
   if(SIX.n){ SIX.n=0; clearTimeout(SIX.t); } tapTempo(evT(ev)); }
 const TAP={taps:[],bpm:null};
+// build 13, test 3: does a key event's timeStamp keep the real press time while the app is busy? The app blocks its main thread for
+// 200 ms every 600 ms; press switch 4 now and then, 10 times. A press made during a block should show a timestamp inside the block
+// and a handler delay of up to 200 ms; a timestamp never inside a block means presses take the time the app gets to them.
+const LOADT={on:false,blocks:[],res:[],iv:null};
+function loadStart(){ if(LOADT.on) return loadDone(); LOADT.on=true; LOADT.blocks=[]; LOADT.res=[]; say('Press timing under load: press switch 4 ten times, spread out.','The screen will stutter: that is the test.');
+  const blk=()=>{ if(!LOADT.on) return; const a=performance.now(); while(performance.now()-a<200){} LOADT.blocks.push([a,performance.now()]); if(LOADT.blocks.length>200) LOADT.blocks.shift(); };
+  LOADT.iv=setInterval(blk,600); renderAll(); }
+function loadPress(ev){ const n=performance.now(), ts=ev&&ev.timeStamp||n, b=LOADT.blocks.find(x=>ts>=x[0]&&ts<=x[1]);
+  LOADT.res.push({gap:n-ts,inBlock:!!b}); log('t3',`switch 4: handler ${Math.round(n-ts)} ms after the event's timestamp${b?`, timestamp inside a block (${Math.round(ts-b[0])} ms in)`:''}`);
+  if(LOADT.res.length>=10) loadDone(); else renderAll(); }
+function loadDone(){ LOADT.on=false; clearInterval(LOADT.iv); const r=LOADT.res, inb=r.filter(x=>x.inBlock).length, big=r.filter(x=>x.gap>=20).length;
+  log('t3',`done: ${r.length} presses, ${inb} with the timestamp inside a block, ${big} handled 20 ms or more after it`); say(`Press timing under load: ${inb} of ${r.length} presses kept a timestamp inside a block.`,'Logged.'); renderAll(); }
 function tapTempo(ts){ initAudio(); const st=E.st; if(!['idle','stopped','ready'].includes(st)){ if(st==='loop') say('Nothing to keep or drop.'); return; }
   const T=TAP.taps; if(T.length&&ts-T[T.length-1]>2000) T.length=0; T.push(ts); log('in',`tap ${T.length}`);
   if(T.length<4){ say(`Tap ${4-T.length} more for a new session…`); return; }
   const iv=T.slice(1).map((t,i)=>t-T[i]), last=T[3]; T.length=0; const mx=Math.max(...iv), mn=Math.min(...iv);
   if(mx>1.25*mn){ log('st',`uneven taps: ${iv.map(Math.round).join(', ')} ms`); say('Uneven taps: tap 4 steady beats again.'); return; }
   const med=iv.slice().sort((a,b)=>a-b)[1], bpm=60000/med; if(bpm<50||bpm>200){ say(`${Math.round(bpm)} bpm is outside 50 to 200: tap again.`); return; }
-  TAP.bpm=bpm; const z=p2h(last)+med/1000; // the beat after your fourth tap is bar 1
+  TAP.bpm=bpm; TAP.at4=last; log('t10',`fourth tap: ${bpm.toFixed(1)} bpm`); const z=p2h(last)+med/1000; // the beat after your fourth tap is bar 1
   if(st==='ready'&&S.ses&&!S.ses.secs.length){ S.ses.bpm=Math.round(bpm*10)/10; save(); clkStart(alignBar(z)); say(`Tempo ${S.ses.bpm} bpm.`); renderAll(); return; }
   prepSession(bpm,z); }
 function alignBar(z){ const bar=barS(); return z<ctx.currentTime+0.05?z+Math.ceil((ctx.currentTime+0.05-z)/bar)*bar:z; }
@@ -1491,6 +1526,8 @@ const typing=t=>!!(t&&t.matches&&(t.matches('textarea,[contenteditable="true"]')
   PED.down[i]=1; PED.kd[i]=now; setTimeout(()=>{ if(PED.down[i]&&performance.now()-PED.kd[i]>=120){ PED.down[i]=0; } },140);
   sw(i,e,'key'); },true));
 function sw(i,ev,src){ log('in',`switch ${i+1}${src==='key'?'':' (screen)'}`);
+  if(PADCAL.on&&PADCAL.sw){ if(i===0){ PADCAL.hits.push(p2h(evT(ev))); if(PADCAL.hits.length>=PADCAL.n) padCalDone(); else renderAll(); } return; }
+  if(LOADT.on){ if(i===3) loadPress(ev); return; }
   if(PED.gate&&!PED.gate(i,ev)) return; if(i===5) return six(ev); act(SW_ACT[i],ev); }
 function swFlash(i,on){ const b=document.querySelector(`[data-sw="${i}"]`); if(b) b.classList.toggle('flash',!!on); }
 async function requestWake(){ try{ if('wakeLock' in navigator&&!E.wake) E.wake=await navigator.wakeLock.request('screen'); }catch(e){} }
@@ -1517,7 +1554,7 @@ function renderScreen(){ const st=$('#scState'), sm=$('#scSmall'), ti=$('#scTitl
   const p=pending().length; if(p) ch.push(`<span class="chip bad">${p} to keep or drop</span>`);
   const q=toPrint().length; if(q) ch.push(`<span class="chip">${q} to print</span>`);
   if(IN.stream) ch.push(`<span class="chip ${IN.pk>0.003?'on':''}">in ${IN.pk>3e-5?Math.round(20*Math.log10(IN.pk))+' dB':'silent'}</span>`);
-  if(E.cap) ch.push(`<span class="chip rec">● TP-7 ${fmtS((performance.now()-E.cap.p0)/1000)}</span>`);
+  if(E.cap) ch.push(`<span class="chip rec">● TP-7 ${fmtS((performance.now()-(E.cap.p0||performance.now()))/1000)}</span>`);
   const h=ch.join(''); if(h!==E.chipsH){ $('#scChips').innerHTML=h; E.chipsH=h; } }
 setInterval(()=>{ const p=$('#scPos'); if(!p) return; const t=posTxt(); if(p.textContent!==t) p.textContent=t; p.classList.toggle('rec',!!(E.rec||E.st==='first'));
   const r=$('#scRing'); if(r&&ctx){ let f=0; if(E.play){ f=phase(ctx.currentTime,E.play.z,E.play.L)/E.play.L; if(ctx.currentTime<E.play.z) f=0; } else if(E.st==='first'&&E.rec){ f=((ctx.currentTime-E.rec.S0)/barS())%1; } r.style.width=(Math.max(0,f)*100).toFixed(1)+'%'; r.style.background=E.rec||E.st==='first'?'#ff6a5e':''; }
@@ -1650,7 +1687,7 @@ function renderSnd(){ const el=$('#pSnd'); if(!el) return; const s=S.synth, syn=
   el.innerHTML=`<div class="card"><h3>Drums</h3>${pads}
     <div class="row"><select data-set="kit" aria-label="Kit">${Object.entries(KITS).map(([k,v])=>`<option value="${k}"${S.kit===k?' selected':''}>${v.name}</option>`).join('')}</select>
     <select data-set="quant" aria-label="Snap hits"><option value="0"${!S.quant?' selected':''}>As played</option><option value="8"${S.quant===8?' selected':''}>Snap to 8ths</option><option value="16"${S.quant===16?' selected':''}>Snap to 16ths</option></select>
-    <button type="button" class="btn sm" data-act="padCal">${PADCAL.on?`Tap on the clicks (${PADCAL.hits.length} of 8)`:S.padFix==null?'Set pad timing':`Pad timing ${S.padFix} ms`}</button></div>
+    <button type="button" class="btn sm" data-act="swCal">${PADCAL.on&&PADCAL.sw?`Switch 1 on the clicks (${PADCAL.hits.length} of 16)`:'Footswitch timing'}</button><button type="button" class="btn sm" data-act="loadTest">${LOADT.on?`Press switch 4 (${LOADT.res.length} of 10)`:'Press timing under load'}</button><button type="button" class="btn sm" data-act="padCal">${PADCAL.on&&!PADCAL.sw?`Tap on the clicks (${PADCAL.hits.length} of 8)`:S.padFix==null?'Set pad timing':`Pad timing ${S.padFix} ms`}</button></div>
     <p class="note">The pads sound as you tap. While switch 1 records, your taps become a drum layer (with your guitar too, if you play it).</p></div>
   <div class="card"><h3>Guitar sound</h3>
     <div class="snd" role="group" aria-label="Guitar sound"><button type="button" class="raw" data-src="gtr" aria-pressed="${!syn}">Raw</button>${Object.entries(G.PRESETS).map(([v,p])=>`<button type="button" data-src="syn" data-preset="${v}" aria-pressed="${syn&&s.preset===v}">${p.name}</button>`).join('')}</div>
@@ -1690,7 +1727,7 @@ function renderSet(){ const el=$('#pSet'); if(!el) return; const info=TP.info;
     <div class="row"><span class="lbl">Keep every new layer without asking</span><button type="button" class="btn sm" data-tog="autoAccept" aria-pressed="${!!S.autoAccept}">${S.autoAccept?'On':'Off'}</button></div>
     <div class="row"><button type="button" class="btn" data-act="printNow">Print kept layers now${toPrint().length?` (${toPrint().length})`:''}</button><button type="button" class="btn" data-act="tapeStop">Stop the TP-7</button></div></div>
   <div class="card"><h3>Footswitch</h3><p class="note">AirTurn in mode 2 (keyboard): 1 record a loop, whatever you play (guitar, pads or both; tap on, tap off; it also closes a new section), 2 play/stop (in the first half bar of a first pass it cancels it), 3 previous section, 4 next section (at the end of this time round; from the last one it records a new section), 5 your guitar's sound: raw or the synth chosen in Sounds, 6 keep the newest pass, double tap 6 to drop it. With nothing to keep, four steady taps of 6 start a new session at that tempo.</p></div>
-  <div class="card"><h3>Tests and log</h3><div class="row"><button type="button" class="btn pri" data-act="diag">Diagnostics</button><button type="button" class="btn" data-act="copyLog">Copy log</button></div>
+  <div class="card"><h3>Tests and log</h3><div class="row"><button type="button" class="btn pri" data-act="diag">Diagnostics</button><button type="button" class="btn" data-act="copyLog">Copy log</button><button type="button" class="btn" data-act="shareLog">Share log</button></div>
     <p class="note">Build ${APP_BUILD}.</p><div class="row"><button type="button" class="btn sm" data-act="endSes">End this session</button></div></div>`; }
 
 
@@ -1712,7 +1749,10 @@ document.addEventListener('click',async e=>{ const t=e.target.closest&&e.target.
   if(a==='tPrev'||a==='tNext'){ if(E.tmode==='tape'){ const ses=S.ses; if(!ses||!ses.secs.length) return; const k=clamp((ses.cur||0)+(a==='tNext'?1:-1),0,ses.secs.length-1); ses.cur=k; if(E.st==='tape') return tapePlay(k,!!E.tloop); renderAll(); return; } return act(a==='tNext'?'next':'prev',e); }
   if(a==='tLoop'){ E.tloop=!E.tloop; if(E.st==='tape'&&S.ses) return tapePlay(S.ses.cur||0,E.tloop); renderAll(); return; }
   if(a==='shClose'){ E.sheet=null; $('#sheet').hidden=true; return; }
-  if(a==='padCal') return padCalStart();
+  if(a==='padCal') return padCalStart(false);
+  if(a==='swCal') return padCalStart(true);
+  if(a==='loadTest') return loadStart();
+  if(a==='shareLog') return shareLog();
   if(a==='teach') return teach();
   if(a==='gainAuto') return levelUI();
   if(a==='gainUp'||a==='gainDn'){ tpGain((S.tp.gain!=null?S.tp.gain:0)+(a==='gainUp'?3:-3)); renderAll(); return; }
@@ -1734,6 +1774,11 @@ document.addEventListener('input',e=>{ const t=e.target; if(t.dataset.synlv){ S.
   if(t.dataset.tg){ const ty=t.dataset.tg; S.ses.tg=S.ses.tg||{gtr:1,syn:1,drm:1}; S.ses.tg[ty]=+t.value; S.ses.secs.forEach(sec=>sec.layers.forEach(l=>{ if(l.type===ty) layerGain(l); })); save(); const v=document.querySelector(`[data-gv="t:${ty}"]`); if(v) v.textContent=gTxt(S.ses.tg[ty]); return; }
   if(!t.dataset.lv) return; S.lv[t.dataset.lv]=+t.value; save(); if(ctx){ const n={metro:A.metro,loop:A.loop,pads:A.pads,prev:A.prev}[t.dataset.lv]; if(n) n.gain.setTargetAtTime(+t.value,ctx.currentTime,0.02); } });
 function confirmTap(el,msg){ if(el._armed){ el._armed=false; return true; } el._armed=true; toast(msg); setTimeout(()=>{ el._armed=false; },3000); return false; }
+// build 13: the report and the whole log as one .txt file, through the share sheet (or a download), to upload into our chat
+async function shareLog(){ const txt=diagReport().replace(/== Log\n[\s\S]*$/,'')+'== Log\n'+logText(), name=`tinebox-loop-b${parseInt(APP_BUILD)}-${new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')}.txt`;
+  try{ const f=new File([txt],name,{type:'text/plain'}); if(navigator.canShare&&navigator.canShare({files:[f]})){ await navigator.share({files:[f],title:name}); return; } }catch(e){ if(e&&e.name==='AbortError') return; }
+  try{ const u=URL.createObjectURL(new Blob([txt],{type:'text/plain'})), a=document.createElement('a'); a.href=u; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),10000); toast('Log saved as '+name); }
+  catch(e){ copyText(txt,'Log'); } }
 async function copyText(txt,what){ try{ await navigator.clipboard.writeText(txt); toast(what+' copied. Paste it into our chat.'); }
   catch(e){ let ta=$('#copyTa'); if(!ta){ ta=document.createElement('textarea'); ta.id='copyTa'; ta.className='copy'; (($('#diag')&&!$('#diag').hidden)?$('#diag .wrap'):$('#pSet')).appendChild(ta); } ta.value=txt; ta.focus(); ta.select(); toast('Select the text below and copy it.'); } }
 
@@ -2097,13 +2142,39 @@ async function t6(){ const id='t6'; if(!(await dgBasics(id))) return; await stop
 // - Loop length: free (switch 1 closes it) or 1, 2, 4 or 8 bars (one press makes the loop; a layer then records one time round).
 const capOn=()=>S.mode!=='arrange'&&!E.forceArr;
 // the tape: Start Session then Play while armed in normal mode makes a new recording of the record sources (line 1, USB 1, USB 2)
-function capStart(why){ if(!capOn()||E.cap||!TP.perf||tpProblem()) return; const t0=performance.now();
-  mNow(sxMsg(SXOP.session)); setTimeout(()=>mNow(sxMsg(SXOP.play)),80); E.cap={p0:t0+80,g0:ctx.currentTime+0.08,why};
-  log('st',`TP-7 recording started (${why})`); renderAll(); }
-async function capStop(){ if(!E.cap) return; const c=E.cap; E.cap=null; mNow(sxMsg(SXOP.stop)); const secs=(performance.now()-c.p0)/1000;
-  log('st',`TP-7 recording stopped: ${secs.toFixed(1)} s`); renderAll(); await sleep(400); const f=await tpFileNow();
-  if(f){ (S.ses.caps=S.ses.caps||[]).push({file:f.path,secs:Math.round(secs*10)/10,at:Date.now()}); save();
-    say(`On the TP-7: ${f.path.split('/').pop()} (${fmtS(secs)}).`,f.b9<3?`It has ${f.b9} track${f.b9>1?'s':''}: set the TP-7's record sources to line 1, USB 1 and USB 2 once.`:'Track 1 your guitar, 2 what you heard, 3 the loops without the metronome.'); } }
+// build 13: Play alone on the press. Start Session went out when the TP-7 was last armed (tpPerform, capStop), so the 80 ms between
+// Start Session and Play is gone. Not tested on the TP-7 (Test 5 always sent Start Session 80 ms before Play): capStop logs an error
+// if a take gives no new file, and the phone test 4 checks it. Play waits for the re-arm after a Stop, and keeps 250 ms after Stop
+// (HANDOFF safety rule: messages too close together leave the tape stopped).
+function capStart(why){ if(!capOn()||E.cap||tpProblem()) return; if(!TP.perf&&!E.capJob) return;
+  const c={why,press:E.pressT!=null?E.pressT:performance.now(),p0:null,known:null}; E.cap=c;
+  (async()=>{ if(E.capJob){ log('st','TP-7: Play waits for the re-arm after the last Stop'); await E.capJob; } if(E.cap!==c) return;
+    if(!TP.perf){ E.cap=null; log('err','TP-7 not armed: this take is not on the TP-7'); say('The TP-7 is not armed: this take is only in the app.'); renderAll(); return; }
+    const w=(TP.stopAt||-1e9)+255-performance.now(); if(w>0){ log('st',`TP-7: Play held ${Math.round(w)} ms (250 ms after Stop, plus 5 ms for the MIDI queue)`); await sleep(w); if(E.cap!==c) return; }
+    c.known=TP.file&&TP.file.path; TP.firstM=null; c.p0=TP.playAt=performance.now(); mNow(sxMsg(SXOP.play));
+    log('t4',`TP-7 recording started (${why}): Play sent ${Math.round(c.p0-c.press)} ms after the press`); renderAll(); })();
+  renderAll(); }
+// build 13 (build 12's fix, measured in Test 5 on 26 Nov): Stop while armed leaves the file open; the disarm closes it and its K
+// notice follows. So: Stop, 150 ms (the shortest gap tested, 15 of 15 takes gave their own file; build 12 had 250 ms), disarm, wait
+// for armed = 0 and a K notice for a file other than the one before the take, then arm again so the guitar reaches the app, and Start
+// Session so the next take needs only Play. Stop to re-armed was 198 to 210 ms in Test 5.
+const CAP_GAP=150;
+async function capStop(){ if(!E.cap) return; const c=E.cap; E.cap=null; if(c.p0==null){ log('st','TP-7: take cancelled before Play went out'); renderAll(); return; }
+  const tS=performance.now(); TP.stopAt=tS; TP.playAt=null; mNow(sxMsg(SXOP.stop)); const secs=(tS-c.p0)/1000;
+  log('st',`TP-7 recording stopped: ${secs.toFixed(1)} s`); renderAll();
+  const job=(async()=>{ TP.perf=false; await sleep(CAP_GAP); const tD=performance.now(); mNow([0xB0,14,0]);
+    const a0=await waitFor(()=>TP.arm&&TP.arm.v===0&&TP.arm.t>=tD,1500,5), tA0=performance.now();
+    const isNew=()=>TP.file&&TP.file.t>=tD&&TP.file.path!==c.known; let f=(await waitFor(isNew,1000,5))?TP.file:null, via='after the disarm';
+    if(!f){ TP.file=null; await tpSession(); f=(await waitFor(()=>TP.file&&TP.file.path!==c.known,1000,5))?TP.file:null; via='from Start Session'; }
+    const tR=performance.now(); mNow([0xB0,14,127]); const a1=await waitFor(()=>TP.arm&&TP.arm.v===1&&TP.arm.t>=tR,1500,5);
+    if(a1){ await tpSession(); TP.perf=true; } else log('err','TP-7 did not report armed again after the take');
+    log('t5',`close and re-arm: Stop to armed = 0 ${a0?Math.round(tA0-tS)+' ms':'not seen'}, file ${f?via:'none new'}, Stop to armed again ${a1?Math.round(performance.now()-tS)+' ms':'not seen'}`);
+    if(!f){ log('err','no new TP-7 file for this take (Play alone may not start a new recording)'); say('The TP-7 reported no new recording for this take.','Copy the log into our chat.'); return; }
+    const fs=f.frames/Math.max(1,f.sr);
+    log('t4',`take: press to Play ${Math.round(c.p0-c.press)} ms, file ${(fs*1000).toFixed(0)} ms, Play to Stop ${Math.round(tS-c.p0)} ms, press to Stop ${Math.round(tS-c.press)} ms`);
+    (S.ses.caps=S.ses.caps||[]).push({file:f.path,secs:Math.round(secs*10)/10,at:Date.now()}); save();
+    say(`On the TP-7: ${f.path.split('/').pop()} (${fmtS(secs)}).`,f.b9<3?`It has ${f.b9} track${f.b9>1?'s':''}: set the TP-7's record sources to line 1, USB 1 and USB 2 once.`:'Track 1 your guitar, 2 what you heard, 3 the loops without the metronome.'); })();
+  E.capJob=job; try{ await job; } finally{ if(E.capJob===job) E.capJob=null; renderAll(); } }
 const fmtS=s=>`${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
 // the loops and pads alone (no metronome, no count-in, no live synth) on USB 2, beside what you hear on USB 1
 function cleanBus(){ if(A.clean||!ctx) return; const d=ctx.destination; A.clean=ctx.createGain();
@@ -2119,7 +2190,7 @@ function peelUndo(){ const P=E.play, sec=P&&SEC(P.k); if(!sec) return; const l=s
 function peelRedo(){ const r=(E.redo||[]).pop(); const sec=r&&SEC(r.k), l=sec&&sec.layers.find(x=>x.id===r.id); if(!l){ say('Nothing to bring back.'); return; }
   l.muted=false; l.peeled=false; layerGain(l); save(); log('st',`redo: ${TNAME[l.type]} on ${sec.name}`); say(`Back: the ${TNAME[l.type].toLowerCase()} layer.`); renderAll(); }
 // switch 1 twice within 0.4 s: what you just played becomes the loop (or the layer) instead of what the first press started
-async function retro(h){ const r=E.rec; if(!r) return false; const t0=r.first?r.S0:r.h0; if(h-t0>0.4) return false;
+async function retro(h){ const r=E.rec; if(!r) return false; const t0=r.first?r.S0:r.h0; if(h-t0<1.5) log('t8',`switch 1 again ${Math.round((h-t0)*1000)} ms after the last (keep window 400 ms)`); if(h-t0>0.4) return false;
   if(r.first){ firstCancel(); E.cancelled=false; const bar=barS(), n=S.len||4; let e1=h;
     if(CLK.on&&CLK.z0!=null){ const bl=CLK.z0+Math.floor((h+0.12-CLK.z0)/bar)*bar; if(bl>h-bar) e1=bl; }
     const s0=e1-n*bar; if(!IN.ring||s0<IN.w/IN.sr-80){ say('Nothing kept: the app holds the last 80 s.'); return true; }
