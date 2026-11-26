@@ -1,7 +1,7 @@
 # Tinebox-Looper
 
 ## Build 13 (26 Nov 2026)
-Rollback: tag `build-11` is the previous main (commit 98ad9e3).
+Rollback: build 11 is commit 98ad9e3 (https://github.com/micklasoft/tinebox-looper/commit/98ad9e3).
 
 **Capture fixes (build 12's, redone on build 11, with Test 5's numbers):**
 - capStop: Stop, 150 ms, disarm, wait for armed = 0 and a K notice for a *new* file, arm again, Start Session. Build 11 never disarmed, so all play-throughs went into one open file, and it reported the previous file as the new take.
