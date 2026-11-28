@@ -181,6 +181,10 @@ textarea.copy{width:100%;height:120px;font-size:12px}
 // in a worker (the exact version printed to tape) and in Node (offline tests). No DOM, no Web Audio.
 function GDSP(){
 'use strict';
+// build 18: the tracker's settings for both the live synth and the printed layer, chosen on an offline bench of strummed open chords
+// (10 chords, 3 guitar tones, clean, clipped, quiet and with the loop bleeding in): 85 ms long windows instead of 43 ms (the low strings
+// sit 5 Hz apart at E2, a fifth of a bin in 43 ms), spectral whitening, a lighter push toward fewer notes.
+const CAT={NL:1024,skew:0.8,nu:0.5,sp:0.08};
 const TAU=2*Math.PI, mtof=m=>440*Math.pow(2,(m-69)/12), ftom=f=>69+12*Math.log2(f/440);
 
 function fft(re,im){ const n=re.length;
@@ -425,7 +429,7 @@ function seamOf(y,sr,away){ const W=Math.round(0.06*sr), a=Math.round((away||0.3
 // ("Teach it your guitar") replaces the generic one.
 function Catcher(sr,o){ o=o||{}; this.sr=sr; this.NL=o.NL||512; this.NS=o.NS||256; this.hop=o.hop||64; this.fx=o.fx||700; this.fmax=Math.min(5500,0.46*sr);
   this.mLo=o.mLo||38; this.mHi=o.mHi||88; this.M=this.mHi-this.mLo+1; this.B=o.B==null?0.00012:o.B; this.prof=o.prof||null; this.it=o.it||12; this.sp=o.sp==null?0.15:o.sp;
-  this.on=o.on||0.1; this.off=o.off||0.045; this.keepH=!!o.keepH; this.onR=o.onR||0.03; this.offR=o.offR||0.008; this.abs=o.abs||2e-4; this.guard=0;
+  this.nu=o.nu==null?1:o.nu; this.on=o.on||0.1; this.off=o.off||0.045; this.keepH=!!o.keepH; this.onR=o.onR||0.03; this.offR=o.offR||0.008; this.abs=o.abs||2e-4; this.guard=0;
   const sk=o.skew||0.65, win=n=>{ const w=new Float32Array(n), P=sk*n; let s=0; for(let i=0;i<n;i++){ const u=i<P?i/P*0.5:0.5+(i-P)/(n-P)*0.5; w[i]=0.5-0.5*Math.cos(TAU*u); s+=w[i]; } for(let i=0;i<n;i++) w[i]*=2/s; return w; };
   this.wL=win(this.NL); this.wS=win(this.NS); this.reL=new Float64Array(this.NL); this.imL=new Float64Array(this.NL); this.reS=new Float64Array(this.NS); this.imS=new Float64Array(this.NS);
   const dL=sr/this.NL, dS=sr/this.NS; this.kL1=Math.floor(this.fx/dL); this.kS0=Math.ceil(this.fx/dS); this.kS1=Math.min(this.NS/2-1,Math.floor(this.fmax/dS));
@@ -437,7 +441,7 @@ Catcher.prototype.lobe=function(d){ d=Math.abs(d); if(d<1e-6) return 1; if(d>=2)
 // templates: harmonics h·f0·sqrt(1 + B h²), each spread over its window's main lobe
 Catcher.prototype.buildW=function(){ const M=this.M, nNoise=6; this.K=M+nNoise; this.Wi=[]; this.Wv=[];
   for(let n=0;n<M;n++){ const f0=mtof(this.mLo+n), col=new Map();
-    for(let h=1;h<=40;h++){ const f=h*f0*Math.sqrt(1+this.B*h*h); if(f>this.fmax) break; let a=this.prof?(this.prof[Math.min(this.prof.length-1,h-1)]||0):1/(1+Math.pow((h-1)/3.2,2)); a/=1+Math.pow(f/3000,2);
+    for(let h=1;h<=40;h++){ const f=h*f0*Math.sqrt(1+this.B*h*h); if(f>this.fmax) break; let a=this.prof?(this.prof[Math.min(this.prof.length-1,h-1)]||0):1/(1+Math.pow((h-1)/3.2,2)); a/=1+Math.pow(f/3000,2); if(this.nu!==1) a=Math.pow(a,this.nu);
       const put=(j,w)=>col.set(j,(col.get(j)||0)+w);
       if(f<this.fx){ const k0=f/this.dL; for(let k=Math.max(1,Math.floor(k0-2));k<=Math.ceil(k0+2)&&k<this.kL1;k++){ const w=this.lobe(k-k0)*a; if(w>1e-3) put(k,w); } }
       else { const k0=f/this.dS; for(let k=Math.max(this.kS0,Math.floor(k0-2));k<=Math.ceil(k0+2)&&k<=this.kS1;k++){ const w=this.lobe(k-k0)*a; if(w>1e-3) put(this.nL+k-this.kS0,w); } } }
@@ -452,9 +456,10 @@ Catcher.prototype.frame=function(x,end){ const NL=this.NL, NS=this.NS;
   for(let i=0;i<NS;i++){ const j=end-NS+i; this.reS[i]=(j>=0?x[j]:0)*this.wS[i]; this.imS[i]=0; } fft(this.reS,this.imS);
   for(let k=0;k<NL/2;k++) this.magL[k]=Math.hypot(this.reL[k],this.imL[k]); for(let k=0;k<NS/2;k++) this.magS[k]=Math.hypot(this.reS[k],this.imS[k]);
   const v=this.v; let tot=0; for(let k=0;k<this.nL;k++){ v[k]=this.magL[k]; tot+=v[k]; } for(let k=this.kS0;k<=this.kS1;k++){ const j=this.nL+k-this.kS0; v[j]=this.magS[k]; tot+=v[j]; }
+  if(this.nu!==1) this.whiten(v);
   // spectral flux on the short window: attacks
   let fl=0; for(let k=this.kS0>>1;k<=this.kS1;k++){ const d=this.magS[k]-this.prevS[k]; if(d>0) fl+=d; } this.prevS.set(this.magS); this.fluxMed+=(fl-this.fluxMed)*(fl>this.fluxMed?0.02:0.1);
-  const onset=fl>4*this.fluxMed+this.abs*2; if(onset) this.guard=3; else if(this.guard>0) this.guard--;
+  const onset=fl>4*this.fluxMed+this.abs*2; if(onset){ this.guard=3; this.sinceOn=0; } else { if(this.guard>0) this.guard--; this.sinceOn=(this.sinceOn||0)+1; }
   // NMF (KL divergence, multiplicative updates), templates fixed, levels warm-started, a small push toward fewer notes
   const K=this.K, h=this.h, Wi=this.Wi, Wv=this.Wv, xx=this.x, D=this.D, M=this.M;
   if(tot<this.abs*D*0.05){ h.fill(1e-6); } else {
@@ -470,10 +475,17 @@ Catcher.prototype.frame=function(x,end){ const NL=this.NL, NS=this.NS;
     e[n]=a; }
   for(let n=0;n<M;n++){ const a=e[n], up=a>=this.on*mx&&a>=this.onR*this.ref&&a>this.abs, keep=a>=this.off*mx&&a>=this.offR*this.ref;
     if(this.st[n]){ if(keep) this.cnt[n]=0; else if(++this.cnt[n]>=3){ this.st[n]=0; this.cnt[n]=0; } }
-    else if(up){ this.cnt[n]++; const need=this.guard>0?(a>=0.5*mx?2:3):(a>=0.3*mx?1:2); if(this.cnt[n]>=need){ this.st[n]=1; this.cnt[n]=0; this.cents[n]=0; } } else this.cnt[n]=0;
+    else if(up){ this.cnt[n]++; const need=this.guard>0?(a>=0.5*mx?2:3):this.sinceOn<20?(a>=0.3*mx?1:2):(a>=0.3*mx?6:10); if(this.cnt[n]>=need){ this.st[n]=1; this.cnt[n]=0; this.cents[n]=0; } } else this.cnt[n]=0;
     if(this.st[n]){ const re=onset&&h[n]>1.35*this.lastH[n]; this.cents[n]=this.refine(n,this.cents[n]); out.push({m:this.mLo+n,a:h[n],c:this.cents[n],re}); }
     this.lastH[n]=h[n]; }
   return {notes:out,onset,fresh:this.guard>0,tot,mx,ref:this.ref,h:this.keepH?Float64Array.from(e):null}; };
+// build 18: spectral whitening (after Klapuri 2006): each bin divided by its 1/3-octave band's level to the power 1 - nu, the frame's
+// overall level kept. A bright or a dark guitar (pickup, pick, tone knob) then looks alike to the templates, flattened the same way.
+Catcher.prototype.whiten=function(v){ const D=this.D; if(!this.cs){ this.cs=new Float64Array(D+1); this.wl=new Int32Array(D); this.wh=new Int32Array(D); this.wv=new Float64Array(D);
+    const fq=j=>j<this.nL?j*this.dL:(this.kS0+j-this.nL)*this.dS; for(let j=0;j<D;j++){ const f=Math.max(fq(j),40), a=f*Math.pow(2,-1/6), b=f*Math.pow(2,1/6); let l=j,h=j;
+      while(l>0&&fq(l-1)>=a&&(l>=this.nL)===(j>=this.nL)) l--; while(h<D-1&&fq(h+1)<=b&&(h+1>=this.nL)===(j>=this.nL)) h++; if(h-l<2){ l=Math.max(0,l-1); h=Math.min(D-1,h+1); } this.wl[j]=l; this.wh[j]=h; } }
+  const cs=this.cs, w=this.wv; cs[0]=0; for(let j=0;j<D;j++) cs[j+1]=cs[j]+v[j]*v[j]; const g=Math.sqrt(cs[D]/D)+1e-12, e=this.nu-1;
+  for(let j=0;j<D;j++){ const l=this.wl[j], h=this.wh[j], env=Math.sqrt((cs[h+1]-cs[l])/(h-l+1)); w[j]=v[j]*Math.pow(Math.max(env,0.05*g)/g,e); } v.set(w); };
 // pitch: the peak near a harmonic around 400 Hz (parabolic interpolation on log magnitude), as cents from the note, smoothed
 Catcher.prototype.refine=function(n,prev){ const f0=mtof(this.mLo+n), h=Math.max(1,Math.round(400/f0)), fh=h*f0*Math.sqrt(1+this.B*h*h);
   const useL=fh<this.fx, mag=useL?this.magL:this.magS, d=useL?this.dL:this.dS, k0=Math.round(fh/d); let best=-1, bv=0;
@@ -510,10 +522,10 @@ function learnProf(x,sr,lo){ const dec=new Decim(sr,12000), y=new Float32Array(M
 // The frames run in time order as live, then each note is moved back by the tracker's delay (the window's lean plus the frames that
 // confirm a note) and onto the attack just before it. A note struck again while it rings splits in two.
 function transcribe(x,sr,o){ o=o||{}; const dec=new Decim(sr,12000), y=new Float32Array(Math.ceil(x.length/dec.D)+8), ny=dec.run(x,x.length,y,0), s2=dec.sr;
-  const C=new Catcher(s2,Object.assign({prof:o.prof,mLo:o.lo||40},o.cat)), hop=C.hop, dt=hop/s2, lag=o.lag==null?0.016:o.lag, nf=Math.floor(ny/hop), run={}, segs=[]; let gmax=0;
+  const C=new Catcher(s2,Object.assign({prof:o.prof,mLo:o.lo||40},CAT,o.cat)), hop=C.hop, dt=hop/s2, lag=o.lag==null?0.016:o.lag, nf=Math.floor(ny/hop), run={}, segs=[]; let gmax=0;
   // a second, finer look (85 ms windows, centred): what the short windows cannot tell apart low down (a chord's common sub-harmonic,
   // a note a third away) it can. A note it hardly sees is dropped. Offline only: it needs 40 ms more of the future.
-  const C2=o.fine===false?null:new Catcher(s2,Object.assign({prof:o.prof,NL:1024,fx:500,skew:0.5,keepH:true,mLo:o.lo||40},o.cat2)), E2=[], X2=[];
+  const C2=o.fine===false?null:new Catcher(s2,Object.assign({prof:o.prof,NL:1024,fx:500,skew:0.5,keepH:true,mLo:o.lo||40,nu:CAT.nu},o.cat2)), E2=[], X2=[];
   for(let i=0;i<nf;i++){ const r=C.frame(y,(i+1)*hop), seen={}; if(C2){ const r2=C2.frame(y,(i+1)*hop); E2.push(Float32Array.from(r2.h)); X2.push(r2.mx||1e-9); }
     for(const n of r.notes){ seen[n.m]=1; if(n.a>gmax) gmax=n.a; let s=run[n.m]; if(s&&n.re&&i-s.i0>8){ segs.push(s); s=null; } if(!s) s=run[n.m]={m:n.m,i0:i,A:[],F:[],R:[]}; s.A.push(n.a); s.R.push(n.a/(r.mx||1e-9)); s.F.push(n.m+n.c/100); s.i1=i; }
     for(const m in run) if(!seen[m]){ segs.push(run[m]); delete run[m]; } }
@@ -575,21 +587,29 @@ Live.prototype.set=function(p,oct){ this.P=Object.assign({},PRESETS[p]||PRESETS.
 // build 8: lighter on the audio thread (17 Nov on the phone at 96 kHz: the input's delay jumped 69 ms while the live synth ran, and an
 // audio thread falling behind is the likely cause): 8 updates a frame instead of 12 (each frame starts from the last), the check 6
 // updates every 4th frame. The lowest note follows the tuning (E2, or D2 for drop D).
-Live.prototype.mk=function(){ const lo=this.lo||40; this.C=new Catcher(this.dec.sr,{prof:this.prof,it:this.it1||8,mLo:lo}); this.C2=new Catcher(this.dec.sr,{prof:this.prof,NL:1024,fx:500,skew:0.5,keepH:true,it:this.it2||6,mLo:lo}); };
+Live.prototype.mk=function(){ const lo=this.lo||40; this.C=new Catcher(this.dec.sr,Object.assign({prof:this.prof,it:this.it1||8,mLo:lo},CAT)); this.C2=new Catcher(this.dec.sr,{prof:this.prof,NL:1024,fx:500,skew:0.5,keepH:true,it:this.it2||6,mLo:lo,nu:CAT.nu,sp:CAT.sp});
+  // build 18: a high-pass (12 dB/octave) a little under the lowest string: DC from the input, handling noise and hum below it
+  const sr=this.dec.sr, w0=TAU*0.8*mtof(lo)/sr, al=Math.sin(w0)/(2*0.7071), cw=Math.cos(w0), a0=1+al; this.hp=[(1+cw)/2/a0,-(1+cw)/a0,(1+cw)/2/a0,-2*cw/a0,(1-al)/a0]; this.hz=[0,0,0,0]; };
 Live.prototype.opts=function(d){ if('add' in d) this.add=d.add||''; if('bend' in d) this.bend=!!d.bend; if('room' in d) this.room=d.room; if('key' in d){ this.key=d.key||null; this.keyFix=!!d.key; } if(d.prof!==undefined||(d.lo&&d.lo!==this.lo)){ if(d.prof!==undefined) this.prof=d.prof; if(d.lo) this.lo=d.lo; this.mk(); } };
+// build 18: what the app plays besides the live synth (loops, metronome, count-in, pads), as it goes out; its echo in the guitar input
+// counts like the synth's own (below), so a loop or a click coming back cannot start a note
+Live.prototype.refIn=function(x,n){ let p=this.rp||0; for(let i=0;i<n;i++){ const a=x[i]<0?-x[i]:x[i]; if(a>p) p=a; } this.rp=p; };
 Live.prototype.feed=function(x,n,out){ const k=this.dec.run(x,n,this.tmp,0), N=this.N;
+  { const t=this.tmp, c=this.hp, z=this.hz; for(let i=0;i<k;i++){ const v=t[i], y=c[0]*v+c[1]*z[0]+c[2]*z[1]-c[3]*z[2]-c[4]*z[3]; z[1]=z[0]; z[0]=v; z[3]=z[2]; z[2]=y; t[i]=y; } }
   for(let i=0;i<n;i++){ const a=x[i]<0?-x[i]:x[i]; if(a>this.inPk) this.inPk=a; }
   if(this.nb+k>this.buf.length){ const keep=N+this.hop; this.buf.copyWithin(0,this.nb-keep,this.nb); this.nb=keep; }
   this.buf.set(this.tmp.subarray(0,k),this.nb); this.nb+=k; this.since+=k;
   let ran=false; while(this.since>=this.hop&&this.nb>=N){ this.since-=this.hop; const echo=this.bleed*this.echoPk(), r=this.C.frame(this.buf,this.nb-this.since); this.gated=this.inPk<3*echo; this.inPk=0; this.step(r); ran=true; if(++this.k2>=this.every){ this.k2=0; this.due=true; } }
   if(!ran&&this.due&&this.nb>=N){ this.due=false; this.check(this.C2.frame(this.buf,this.nb)); }
   const nv=this.V.length, want=1/Math.sqrt(Math.max(1,nv)); this.vg+=(want-this.vg)*(want<this.vg?0.5:0.05);
-  for(let i=0;i<n;i++) out[i]=0; for(const v of this.V) v.render(out,0,n,this.P.gain*this.gain*this.vg);
+  for(let i=0;i<n;i++) out[i]=0; for(const v of this.V) v.render(out,0,n,this.P.gain*this.gain);
   this.sp.run(out,0,n,(this.P.room||0)*this.room);
   let pk=0; for(let i=0;i<n;i++){ const a=out[i]<0?-out[i]:out[i]; if(a>pk) pk=a; }
-  const g0=this.lg, lim=pk*g0>this.lim?this.lim/pk:Math.min(1,g0+(1-g0)*0.004*n/128); this.lg=lim;
-  if(lim<=g0){ if(lim!==1) for(let i=0;i<n;i++) out[i]*=lim; } else for(let i=0;i<n;i++) out[i]*=g0+(lim-g0)*i/n;
-  let op=0; for(let i=0;i<n;i++){ const a=out[i]<0?-out[i]:out[i]; if(a>op) op=a; } if(op>this.bp) this.bp=op; this.bs+=n; if(this.bs>=this.bn){ this.oq[this.oi++&63]=this.bp; this.bp=0; this.bs=0; }
+  // build 18: one gain for the voice count and the limiter, ramped across the block (build 17 stepped it at the block's start, a click
+  // on every chord), then a soft clip for what the ramp lets through
+  const g0=this.lg, t=this.vg, tg=pk*t>this.lim?this.lim/pk:t, g1=tg<g0?tg:g0+(tg-g0)*0.02*n/128; this.lg=g1;
+  for(let i=0;i<n;i++){ let y=out[i]*(g0+(g1-g0)*(i+1)/n); const a=y<0?-y:y; if(a>0.6) y=(y<0?-1:1)*(0.6+0.4*Math.tanh((a-0.6)/0.4)); out[i]=y; }
+  let op=0; for(let i=0;i<n;i++){ const a=out[i]<0?-out[i]:out[i]; if(a>op) op=a; } if(op>this.bp) this.bp=op; this.bs+=n; if(this.bs>=this.bn){ this.oq[this.oi++&63]=Math.max(this.bp,this.rp||0); this.bp=0; this.rp=0; this.bs=0; }
   this.V=this.V.filter(v=>!v.idle()); };
 // the loudest the synth was from the round trip minus 30 ms to the round trip plus 30 ms ago
 Live.prototype.echoPk=function(){ const a=Math.round((this.dly-0.03)/0.01), b=Math.round((this.dly+0.03)/0.01); let m=0; for(let j=Math.max(1,a);j<=Math.min(63,b);j++){ const v=this.oq[(this.oi-j)&63]; if(v>m) m=v; } return m; };
@@ -612,7 +632,7 @@ Live.prototype.step=function(r){ const P=this.P; let mx=0; for(const nt of r.not
     if(!v){ if(this.gated) continue; v=this.voice(nt,f,lv); this.map[key]=v; }
     else if((nt.re&&P.mode==='trig')||(P.mono&&v.mn!==nt.m&&P.mode==='trig')) v.on(f,Math.sqrt(lv),v.ivr?Math.pow(2,addIv(nt.m,this.add,this.key)/12):0);
     if(v.mn!==nt.m){ v.q1=0; v.n1=0; v.q2=0; v.n2=0; v.age=0; } v.mn=nt.m; v.miss=0; v.ctl(lv,f); v.q1=(v.q1||0)+nt.a/(r.mx||1e-9); v.n1=(v.n1||0)+1; v.q2=v.q2||0; v.n2=v.n2||0; v.age=(v.age||0)+1; }
-  for(const key in this.map){ if(now[key]) continue; const v=this.map[key]; if(++v.miss>=2){ v.off(); delete this.map[key]; } }
+  for(const key in this.map){ if(now[key]) continue; const v=this.map[key]; if(++v.miss>=2){ if(v.age<6) v.kill(); else v.off(); delete this.map[key]; } }
   if(this.log) this.log.push(Object.keys(this.map).map(k=>[this.map[k].mn,this.map[k].aT,this.map[k].fT])); };
 
 return {fft,Decim,Tracker,Catcher,onsets,transcribe,transcribeK,tidy,learnProf,keyOf,keyOfPc,snapToKey,addIv,bendOf,PRESETS,Voice,Space,render,fold,peakOf,seamOf,Live,mtof,ftom};
@@ -629,7 +649,7 @@ return {fft,Decim,Tracker,Catcher,onsets,transcribe,transcribeK,tidy,learnProf,k
    While you play, the TP-7 stands still and armed: the guitar then reaches the app over USB (8 Oct) and nothing records.
    Build 2 (8 Nov, your report of build 1): in edit mode, armed on line 1, you heard your guitar and the app heard it, but you did not
    hear the app. The stance is now normal mode, armed (record sources line 1, USB 1, USB 2), unless the diagnostics find otherwise. */
-const APP_BUILD='17 (28 Nov 2026)';
+const APP_BUILD='18 (28 Nov 2026)';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -720,11 +740,11 @@ class TLIn extends AudioWorkletProcessor{
       if(this.live&&d.opts) this.live.opts(d.opts);
       if(this.live&&d.bleed!=null){ this.live.bleed=d.bleed; this.live.dly=d.dly; }
       if(d.gain!=null&&this.live) this.live.gain=d.gain; }; }
-  process(inputs,outputs){ const inp=inputs[0]||[], a=inp[0], b=inp[1], out=outputs[0]&&outputs[0][0], n=a?a.length:128, m=this.m;
+  process(inputs,outputs){ const inp=inputs[0]||[], a=inp[0], b=inp[1], out=outputs[0]&&outputs[0][0], n=a?a.length:128, m=this.m, rf=inputs[1]&&inputs[1][0];
     if(a){ for(let i=0;i<n;i++) m[i]=b?0.5*(a[i]+b[i]):a[i]; } else m.fill(0);
     if(this.n===0) this.t0=currentTime; this.buf.set(m.subarray(0,n),this.n); this.n+=n;
     if(this.n>=1024){ const c=this.buf.slice(0,this.n); this.port.postMessage({t:this.t0,x:c},[c.buffer]); this.n=0; }
-    if(out){ if(this.on&&this.live){ const t0=Date.now(); this.live.feed(m,n,out); this.busy=(this.busy||0)+Date.now()-t0; } else out.fill(0); }
+    if(out){ if(this.on&&this.live){ const t0=Date.now(); if(rf) this.live.refIn(rf,n); this.live.feed(m,n,out); this.busy=(this.busy||0)+Date.now()-t0; } else out.fill(0); }
     // the live synth's share of the audio thread's time, once a second while it runs
     this.fr=(this.fr||0)+n; if(this.fr>=sampleRate){ if(this.on) this.port.postMessage({load:(this.busy||0)/(this.fr/sampleRate*1000)}); this.fr=0; this.busy=0; }
     return true; } }
@@ -758,7 +778,7 @@ async function openInput(){
       try{ await ctx.audioWorklet.addModule(url); IN.kind='worklet'; break; }catch(e){ log('err','worklet: '+(e&&e.message||e)); } } }
   if(IN.kind==='worklet'&&!A.lim){ try{ A.lim=new AudioWorkletNode(ctx,'tl-lim',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[2],channelCount:2,channelCountMode:'explicit',channelInterpretation:'speakers'});
       A.mon.disconnect(); A.mon.connect(A.lim); A.lim.connect(A.master); log('app','limiter on what you hear: on'); }catch(e){ A.lim=null; log('err','limiter: '+(e&&e.message||e)); } }
-  if(IN.kind==='worklet'){ IN.node=new AudioWorkletNode(ctx,'tl-in',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[1],channelCount:2,channelCountMode:'explicit',channelInterpretation:'discrete'});
+  if(IN.kind==='worklet'){ IN.node=new AudioWorkletNode(ctx,'tl-in',{numberOfInputs:2,numberOfOutputs:1,outputChannelCount:[1],channelCount:2,channelCountMode:'explicit',channelInterpretation:'discrete'});
     IN.node.port.onmessage=e=>{ const d=e.data; if(d.load!=null){ IN.load=d.load; IN.loadMax=Math.max(IN.loadMax||0,d.load); if(d.load>0.5) log('err',`live synth used ${Math.round(d.load*100)} % of the audio thread`); return; } inChunk(d.t,d.x); }; }
   else { // fallback: a 256-sample script processor, the live synth on the main thread
     IN.kind='script'; const sp=IN.node=ctx.createScriptProcessor(256,2,1); sp.channelCountMode='explicit'; sp.channelInterpretation='discrete'; IN.live=null;
@@ -766,6 +786,8 @@ async function openInput(){
       for(let i=0;i<n;i++) m[i]=0.5*(a[i]+b[i]); inChunk(e.playbackTime!=null?e.playbackTime:ctx.currentTime,m);
       if(IN.pv&&IN.live) IN.live.feed(m,n,o); else o.fill(0); }; }
   IN.src.connect(IN.node); IN.node.connect(A.prev);
+  // build 18: the loops, metronome, count-in and pads (not the live synth itself, which the synth already knows) as the echo reference
+  if(IN.kind==='worklet'){ try{ if(!A.ref){ A.ref=ctx.createGain(); [A.loop,A.metro,A.count,A.pads].forEach(x=>x&&x.connect(A.ref)); } A.ref.connect(IN.node,0,1); }catch(e){ log('err','echo reference: '+(e&&e.message||e)); } }
   const st=tr&&tr.getSettings?tr.getSettings():{}; IN.nch=st.channelCount||2;
   log('app',`audio input: ${IN.kind}, ${IN.nch} channel${IN.nch>1?'s':''}`); return true; }
 // the live synth: while a synth layer records (if set), and on the Sounds tab (the delay is the round trip plus about 30 ms of tracking)
@@ -1467,7 +1489,7 @@ function tapeSecAt(pos){ const ses=S.ses; if(!ses) return -1; const t=pos/1000; 
 // (double tap); with nothing to keep, four taps of 6 start a new session.
 // build 17 (28 Nov): one job per switch, single taps only (Boss RC-1 cycles record, overdub and play on one pedal and needs double
 // presses and holds; the AirTurn has six switches and no holds in keyboard mode, so each job gets its own switch and nothing waits)
-const SW_ACT=['rec','play','undo','redo','clear','keep'], SW_NAME=['Record / overdub','Play / stop','Undo','Redo','Clear','Keep what I just played'];
+const SW_ACT=['rec','play','undo','redo','clear','keep'], SW_NAME=['Record / overdub','Play / stop','Undo','Redo','Clear (saves the TP-7 file)','Keep what I just played'];
 async function act(a,ev,hh){ initAudio(); if(!ctx) return; if(ctx.state!=='running') try{ await ctx.resume(); }catch(e){}
   const h=hh!=null?hh:p2h(evT(ev)); E.pressT=ev?evT(ev):performance.now(); log('do',`${a} (${E.st}${E.rec?', recording':''})`); requestWake();
   try{ await act2(a,h); }catch(err){ log('err',`${a}: ${err&&err.stack||err}`); say('Error: '+(err&&err.message||err)); } renderAll(); }
@@ -1511,9 +1533,9 @@ function undoNow(){ const st=E.st;
   log('st',`undo: ${TNAME[l.type]} on ${sec.name}`); say(`Undone: the ${TNAME[l.type].toLowerCase()} layer.`,'Switch 4 brings it back.'); renderAll(); }
 // build 17: switch 5, clear: only while stopped, so nothing is wiped mid-song. The TP-7 files stay.
 async function clearNow(){ const st=E.st; if(['first','loop'].includes(st)){ say('Stop first (switch 2), then clear.'); return; }
-  if(!S.ses||!S.ses.secs.length){ say('Nothing to clear.','Switch 1 records a loop.'); return; }
-  await stopAll(true); S.ses.secs=[]; S.ses.cur=0; E.bufs.clear(); E.raws.clear(); E.redo=[]; E.st='ready'; save(); log('st','cleared');
-  say('Cleared.','Switch 1 records a new loop. The TP-7 recordings stay on the TP-7.'); renderAll(); }
+  if(!S.ses||!S.ses.secs.length){ if(S.tp.open){ const f=await capClose(); say(f?`Saved on the TP-7: ${f.path.split('/').pop()}.`:'The TP-7 file is closed.'); return; } say('Nothing to clear.','Switch 1 records a new loop.'); return; }
+  await stopAll(true); const f=await capClose(); S.ses.secs=[]; S.ses.cur=0; E.bufs.clear(); E.raws.clear(); E.redo=[]; E.st='ready'; save(); log('st','cleared');
+  say(f?`Saved on the TP-7: ${f.path.split('/').pop()} (${fmtS(f.frames/Math.max(1,f.sr))}, ${f.b9} track${f.b9===1?'':'s'}).`:'Cleared.',f&&f.b9<3?'Set the TP-7\'s record sources to line 1, USB 1 and USB 2 once, for all three tracks.':'Switch 1 records a new loop: a new project and a new file.'); renderAll(); }
 // build 17: switch 6, keep what I just played: while a loop plays, the last whole time round becomes a layer; before the first loop,
 // with the metronome on, the last 4 bars become the loop (the app holds the last 80 s of input)
 async function keepNow(h){ const st=E.st;
@@ -1635,7 +1657,7 @@ const ICO={prev:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H
 function renderArr(){ const el=$('#pArr'); if(!el) return; const sec=curSec(), layers=sec?sec.layers:[], on=layers.filter(l=>!l.muted&&l.state==='accepted').length;
   const st=E.st==='idle'?(midiReady()?'Tap switch 1 to start':'Connect the TP-7 (Settings)'):E.st==='prep'?'Getting the TP-7 ready…':E.st==='ready'?'Ready: switch 1 records':E.st==='first'?'Recording the loop':E.st==='loop'?(E.rec?'Overdubbing':'Playing'):E.st==='stopped'?'Stopped':E.st;
   const h=`<div class="card"><div class="bigst ${E.rec||E.st==='first'?'rec':E.st==='loop'?'on':''}">${esc(st)}</div>
-    <p class="note">${sec?`Loop ${sec.L.toFixed(2)} s, ${on} of ${layers.length} layer${layers.length===1?'':'s'} playing`:'No loop yet.'}${E.cap?' · the TP-7 is recording':''}</p>
+    <p class="note">${sec?`Loop ${sec.L.toFixed(2)} s, ${on} of ${layers.length} layer${layers.length===1?'':'s'} playing`:'No loop yet.'}${E.cap?' · the TP-7 is recording':S.tp.open?` · TP-7 file open, ${fmtS(S.tp.open)}`:''}</p>
     <div class="row"><button type="button" class="btn sm" data-tog="metroOn" aria-pressed="${!!S.metroOn}">Metronome ${S.metroOn?'on':'off'}</button><button type="button" class="btn sm" data-tab="Snd">Sound: ${esc(S.src==='syn'?srcName():'raw guitar')}</button></div></div>
   ${layers.length?`<div class="card"><h3>Layers</h3>${layers.slice().reverse().map(l=>layerRow(l,S.ses.secs.indexOf(sec))).join('')}</div>`:''}
   <div class="card"><h3>Footswitch</h3><div class="sw6">${SW_NAME.map((n,i)=>`<button type="button" class="btn swb" data-sw="${i}"><b>${i+1}</b> ${n}</button>`).join('')}</div></div>`;
@@ -1759,7 +1781,7 @@ function renderSet(){ const el=$('#pSet'); if(!el) return; const info=TP.info;
   <div class="card"><h3>Capture</h3>
 
     <p class="note">${capOn()?'As you play: the TP-7 records from your first loop or Play until you stop, one recording per play-through. Track 1 your guitar, 2 what you hear, 3 the loops and pads without the metronome. Nothing to print or wait for.':'The arrangement: each section goes to the TP-7 in its own place when you stop (section by section, track by track), so the TP-7 can play from any section.'}</p>
-    <p class="note">Switches: 1 record / overdub, 2 play / stop, 3 undo, 4 redo, 5 clear (while stopped), 6 keep what you just played.</p></div>
+    <p class="note">Switches: 1 record / overdub, 2 play / stop, 3 undo, 4 redo, 5 clear and close the TP-7 file (while stopped), 6 keep what you just played. One project is one TP-7 file with three tracks.</p></div>
   <div class="card"><h3>Guitar input (TP-7 line 1)</h3><div class="row"><span class="lbl">Input gain: ${S.tp.gain!=null?S.tp.gain+' dB':'as set on the TP-7'}</span><button type="button" class="btn sm" data-act="gainDn" aria-label="Gain down 3 dB">−</button><button type="button" class="btn sm" data-act="gainUp" aria-label="Gain up 3 dB">+</button></div>
     <div class="row"><button type="button" class="btn sm" data-act="gainAuto" ${E.lvl?'disabled':''}>${E.lvl?'Listening…':'Set from my playing'}</button></div>
     <p class="note">A guitar plugged straight into the TP-7 is quiet (near −30 dBFS on 17 Nov). The app sets the TP-7's input gain (0 to 42 dB) over MIDI; aim for peaks near −12 dBFS. The TP-7 lets you hear your guitar at that level too.</p></div>
@@ -1772,7 +1794,7 @@ function renderSet(){ const el=$('#pSet'); if(!el) return; const info=TP.info;
   <div class="card"><h3>Layers</h3><div class="row"><span class="lbl">Print kept layers when you stop</span><button type="button" class="btn sm" data-tog="printOnStop" aria-pressed="${!!S.printOnStop}">${S.printOnStop?'On':'Off'}</button></div>
     <div class="row"><span class="lbl">Keep every new layer without asking</span><button type="button" class="btn sm" data-tog="autoAccept" aria-pressed="${!!S.autoAccept}">${S.autoAccept?'On':'Off'}</button></div>
     <div class="row"><button type="button" class="btn" data-act="printNow">Print kept layers now${toPrint().length?` (${toPrint().length})`:''}</button><button type="button" class="btn" data-act="tapeStop">Stop the TP-7</button></div></div>
-  <div class="card"><h3>Footswitch</h3><p class="note">AirTurn in mode 2 (keyboard). One job per switch, single taps: 1 record, and while a loop plays start or stop an overdub; 2 play or stop (each play-through is one TP-7 recording); 3 undo the newest layer, or cancel a recording; 4 redo; 5 clear the loop (only while stopped; the TP-7 files stay); 6 keep what you just played as a layer (before the first loop: the last 4 bars, with the metronome on).</p></div>
+  <div class="card"><h3>Footswitch</h3><p class="note">AirTurn in mode 2 (keyboard). One job per switch, single taps: 1 record, and while a loop plays start or stop an overdub; 2 play or stop (every play-through goes into the same TP-7 file); 3 undo the newest layer, or cancel a recording; 4 redo; 5 clear the loop and close the TP-7 file (only while stopped); 6 keep what you just played as a layer (before the first loop: the last 4 bars, with the metronome on).</p></div>
   <div class="card"><h3>Tests and log</h3><div class="row"><button type="button" class="btn pri" data-act="diag">Diagnostics</button><button type="button" class="btn" data-act="copyLog">Copy log</button><button type="button" class="btn" data-act="shareLog">Share log</button></div>
     <p class="note">Build ${APP_BUILD}.</p><div class="row"><button type="button" class="btn sm" data-act="endSes">End this session</button></div></div>`; }
 
@@ -1810,7 +1832,7 @@ document.addEventListener('click',async e=>{ const t=e.target.closest&&e.target.
   if(a==='printNow'){ if(E.st==='loop'||E.st==='first') await stopAll(true); return printAll(); }
   if(a==='diag') return diagOpen();
   if(a==='copyLog') return copyText(logText(),'Log');
-  if(a==='endSes'){ if(!confirmTap(t,'Tap again to end the session (the TP-7 recording stays).')) return; await stopAll(true); S.ses=null; E.bufs.clear(); E.raws.clear(); E.st='idle'; save(); say('Session ended.','Switch 1 starts a new one.'); renderAll(); return; } });
+  if(a==='endSes'){ if(!confirmTap(t,'Tap again to end the session (the TP-7 recording stays).')) return; await stopAll(true); await capClose(); S.ses=null; E.bufs.clear(); E.raws.clear(); E.st='idle'; save(); say('Session ended.','Switch 1 starts a new one.'); renderAll(); return; } });
 document.addEventListener('change',e=>{ const t=e.target;
   if(t.dataset.set){ const p=t.dataset.set.split('.'), v=/^-?\d+$/.test(t.value)?+t.value:t.value; if(p.length>1) S[p[0]][p[1]]=v; else S[p[0]]=v; save(); prevSync(); renderAll(); return; }
   if(t.dataset.lset){ const k=+t.dataset.k, sec=SEC(k), l=sec&&sec.layers.find(x=>x.id===t.dataset.id); if(!l) return; l[t.dataset.lset]=t.dataset.lset==='oct'?+t.value:t.value; save(); synthLayer(l,k); renderAll(); } });
@@ -2371,31 +2393,30 @@ function capStart(why){ if(!capOn()||E.cap||tpProblem()) return; if(!TP.perf&&!E
   (async()=>{ if(E.capJob){ log('st','TP-7: Play waits for the re-arm after the last Stop'); await E.capJob; } if(E.cap!==c) return;
     if(!TP.perf){ E.cap=null; log('err','TP-7 not armed: this take is not on the TP-7'); say('The TP-7 is not armed: this take is only in the app.'); renderAll(); return; }
     const w=(TP.stopAt||-1e9)+255-performance.now(); if(w>0){ log('st',`TP-7: Play held ${Math.round(w)} ms (250 ms after Stop, plus 5 ms for the MIDI queue)`); await sleep(w); if(E.cap!==c) return; }
-    c.known=TP.file&&TP.file.path; TP.firstM=null; c.p0=TP.playAt=performance.now(); mNow(sxMsg(SXOP.play));
-    log('t4',`TP-7 recording started (${why}): Play sent ${Math.round(c.p0-c.press)} ms after the press`); renderAll(); })();
+    TP.firstM=null; c.p0=TP.playAt=performance.now(); mNow(sxMsg(SXOP.play));
+    log('t4',`TP-7 recording ${S.tp.open?'continues in the project file':'started'} (${why}): Play sent ${Math.round(c.p0-c.press)} ms after the press`); renderAll(); })();
   renderAll(); }
-// build 13 (build 12's fix, measured in Test 5 on 26 Nov): Stop while armed leaves the file open; the disarm closes it and its K
-// notice follows. So: Stop, 150 ms (the shortest gap tested, 15 of 15 takes gave their own file; build 12 had 250 ms), disarm, wait
-// for armed = 0 and a K notice for a file other than the one before the take, then arm again so the guitar reaches the app, and Start
-// Session so the next take needs only Play. Stop to re-armed was 198 to 210 ms in Test 5.
-const CAP_GAP=150;
+// build 18 (28 Nov): one project, one TP-7 file. Stop while armed leaves the file open and the next Play records on into it
+// (HANDOFF 7; build 11 did this by accident). So Stop only stops the tape; the file grows with each play-through, three tracks
+// (line 1, USB 1, USB 2). Clear (switch 5) or ending the session closes it: disarm, the K notice names it, arm again.
+const CAP_GAP=150; // Stop to disarm: the shortest gap Test 5 tried (15 of 15 files closed cleanly, 26 Nov)
 async function capStop(){ if(!E.cap) return; const c=E.cap; E.cap=null; if(c.p0==null){ log('st','TP-7: take cancelled before Play went out'); renderAll(); return; }
-  const tS=performance.now(), pm=TP.firstM!=null&&TP.playAt!=null?Math.round(TP.firstM-TP.playAt):null; TP.stopAt=tS; TP.playAt=null; mNow(sxMsg(SXOP.stop)); const secs=(tS-c.p0)/1000;
-  log('st',`TP-7 recording stopped: ${secs.toFixed(1)} s`); renderAll();
-  const job=(async()=>{ TP.perf=false; await sleep(CAP_GAP); const tD=performance.now(); mNow([0xB0,14,0]);
-    const a0=await waitFor(()=>TP.arm&&TP.arm.v===0&&TP.arm.t>=tD,1500,5), tA0=performance.now();
-    const isNew=()=>TP.file&&TP.file.t>=tD&&TP.file.path!==c.known; let f=(await waitFor(isNew,1000,5))?TP.file:null, via='after the disarm';
-    if(!f){ TP.file=null; await tpSession(); f=(await waitFor(()=>TP.file&&TP.file.path!==c.known,1000,5))?TP.file:null; via='from Start Session'; }
+  const tS=performance.now(); TP.stopAt=tS; TP.playAt=null; mNow(sxMsg(SXOP.stop)); const secs=(tS-c.p0)/1000;
+  S.tp.open=(S.tp.open||0)+secs; S.tp.openN=(S.tp.openN||0)+1; save();
+  log('st',`TP-7 stopped: ${secs.toFixed(1)} s; the project file holds ${fmtS(S.tp.open)} in ${S.tp.openN} play-through${S.tp.openN>1?'s':''}`);
+  say(`Stopped. The TP-7 file now holds ${fmtS(S.tp.open)}.`,'Switch 2 plays on into the same file. Switch 5 clears the loop and closes the file.'); renderAll(); }
+// close the project file: Stop to disarm at least 150 ms, armed = 0, the K notice names the file, arm again, Start Session
+async function capClose(){ if(E.cap) await capStop(); if(!S.tp.open) return null; const known=TP.file&&TP.file.path, secs=S.tp.open, n=S.tp.openN||1;
+  const w=(TP.stopAt||-1e9)+CAP_GAP-performance.now(); if(w>0) await sleep(w);
+  const job=(async()=>{ TP.perf=false; const tD=performance.now(); mNow([0xB0,14,0]); await waitFor(()=>TP.arm&&TP.arm.v===0&&TP.arm.t>=tD,1500,5);
+    let f=(await waitFor(()=>TP.file&&TP.file.t>=tD&&TP.file.path!==known,1000,5))?TP.file:null;
+    if(!f){ TP.file=null; await tpSession(); f=(await waitFor(()=>TP.file&&TP.file.path!==known,1000,5))?TP.file:null; }
     const tR=performance.now(); mNow([0xB0,14,127]); const a1=await waitFor(()=>TP.arm&&TP.arm.v===1&&TP.arm.t>=tR,1500,5);
-    if(a1){ await tpSession(); TP.perf=true; } else log('err','TP-7 did not report armed again after the take');
-    log('t5',`close and re-arm: Stop to armed = 0 ${a0?Math.round(tA0-tS)+' ms':'not seen'}, file ${f?via:'none new'}, Stop to armed again ${a1?Math.round(performance.now()-tS)+' ms':'not seen'}`);
-    const tk={pressToPlay:Math.round(c.p0-c.press),playToM:pm,pressToStop:Math.round(tS-c.press),fileMs:f?Math.round(f.frames/Math.max(1,f.sr)*1000):null,file:f?f.path:null}; (E.takes=E.takes||[]).push(tk);
-    if(!f){ log('err','no new TP-7 file for this take (Play alone may not start a new recording)'); say('The TP-7 reported no new recording for this take.','Copy the log into our chat.'); return; }
-    const fs=f.frames/Math.max(1,f.sr);
-    log('t4',`take: press to Play ${Math.round(c.p0-c.press)} ms, file ${(fs*1000).toFixed(0)} ms, Play to Stop ${Math.round(tS-c.p0)} ms, press to Stop ${Math.round(tS-c.press)} ms`);
-    (S.ses.caps=S.ses.caps||[]).push({file:f.path,secs:Math.round(secs*10)/10,at:Date.now()}); save();
-    say(`On the TP-7: ${f.path.split('/').pop()} (${fmtS(secs)}).`,f.b9<3?`It has ${f.b9} track${f.b9>1?'s':''}: set the TP-7's record sources to line 1, USB 1 and USB 2 once.`:'Track 1 your guitar, 2 what you heard, 3 the loops without the metronome.'); })();
-  E.capJob=job; try{ await job; } finally{ if(E.capJob===job) E.capJob=null; renderAll(); } }
+    if(a1){ await tpSession(); TP.perf=true; } else log('err','TP-7 did not report armed again after closing the file');
+    S.tp.open=0; S.tp.openN=0; save(); if(!f){ log('err','the TP-7 named no file when it closed'); return null; }
+    if(S.ses){ (S.ses.caps=S.ses.caps||[]).push({file:f.path,secs:Math.round(f.frames/Math.max(1,f.sr)*10)/10,takes:n,at:Date.now()}); save(); }
+    log('st',`TP-7 file closed: ${fileTxt(f)}, ${n} play-through${n>1?'s':''} (${secs.toFixed(1)} s played)`); return f; })();
+  E.capJob=job; try{ return await job; } finally{ if(E.capJob===job) E.capJob=null; renderAll(); } }
 const fmtS=s=>`${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
 // the loops and pads alone (no metronome, no count-in, no live synth) on USB 2, beside what you hear on USB 1
 function cleanBus(){ if(A.clean||!ctx) return; const d=ctx.destination; A.clean=ctx.createGain();

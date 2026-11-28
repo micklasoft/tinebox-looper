@@ -1,5 +1,34 @@
 # Tinebox-Looper
 
+## Build 18 (28 Nov 2026): one file per project, a better synth
+Rollback: build 17 is commit 075750f.
+
+**One project, one TP-7 file.** Stop (switch 2) only stops the tape: the next Play records on into the same file, so every play-through lands in one file with its three tracks (line 1, USB 1, USB 2). Clear (switch 5) or ending the session closes the file: the app disarms, reads the file's name from the TP-7, and arms again. The Loop screen shows "TP-7 file open, m:ss". Fake TP-7 (`sim/run6.js`): 1 file across 2 play-throughs, closed by Clear, no rule breaks.
+
+**Synth engine.** Measured on a new offline bench (`sim/synth-bench.js`, `sim/synth-offline.js`): Karplus-Strong strummed open chords (E, Am, C, G, D, Em, F, Dm, A, B7) with known notes, three guitar tones, clean, clipped, quiet and with a loop bleeding in. Mid tone, build 17 → build 18:
+
+| Live synth | Build 17 | Build 18 |
+|---|---|---|
+| Chord notes right (note names) | 68 % | 92 % |
+| Exact notes found (octave too) | 36 % | 62 % |
+| Notes it plays that are wrong | 35 % | 7 % |
+| Strings voiced within 200 ms | 29 of 52 | 46 of 52 |
+| Delay to the voice, median / 90 % | 35 / 87 ms | 35 / 68 ms |
+| Single notes, median delay | 17 ms | 17 ms |
+
+Printed layer (offline): exact notes 28 % → 68 % right, onset error median 13 → 3 ms.
+
+What changed:
+- **Longer analysis window for the low strings:** 85 ms instead of 43 ms below 700 Hz. At E2 the strings sit 5 Hz apart, a fifth of a bin in 43 ms. The attack still comes from the 21 ms window above 700 Hz, and the window's weight sits late in it, so the delay did not grow.
+- **Spectral whitening** (after Klapuri 2006), so a bright or a dark guitar looks alike to the tracker.
+- **Fewer false notes:** a new note away from an attack needs 32 to 53 ms of evidence (the tracker's flicker mid-chord made most false notes); a voice whose note goes within 32 ms is cut in 30 ms, not on the sound's release.
+- **Loops and metronome as echo reference:** what the app plays (not only the synth) now counts as echo, so a loop coming back into the guitar input cannot start a note.
+- **Input high-pass** a little under the lowest string (DC, handling noise, hum).
+- **No clicks from the output gain:** the voice-count gain and the limiter now ramp across each audio block (build 17 stepped them), then a soft clip.
+- Audio thread cost: 4.3 % → 5.9 % of real time on the test machine.
+
+Limits: the bench is synthetic guitar, not your guitar. Two notes an octave apart in one chord (E2 and E3) still often show as one. The real test is your playing.
+
 ## Build 17 (28 Nov 2026): the six-switch looper
 Rollback: build 16 is commit 4644117.
 
