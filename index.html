@@ -40,6 +40,8 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 #scSmall{grid-column:1/3;font-size:14px;color:var(--scr-dim);min-height:17px}
 #scPos{font-size:26px;line-height:1;align-self:center;text-align:right;white-space:nowrap}
 #scPos.rec{color:#ff6a5e}
+.bigst{font-size:28px;font-weight:700;line-height:1.15;margin:4px 0 6px}.bigst.rec{color:#ff6a5e}.bigst.on{color:#7BC99A}
+.sw6{display:grid;grid-template-columns:1fr 1fr;gap:8px}.swb{text-align:left;min-height:52px}.swb b{display:inline-block;width:1.4em}.swb.flash{outline:2px solid #ff6a5e}
 .ring{grid-column:1/3;height:6px;border-radius:3px;background:#1A2025;overflow:hidden;margin-top:6px;position:relative}
 .ring i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--scr-ink);opacity:.8}
 .chips{grid-column:1/3;display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;font-size:13px}
@@ -167,7 +169,7 @@ textarea.copy{width:100%;height:120px;font-size:12px}
   <main class="panel" id="pSnd" hidden></main>
   <main class="panel" id="pSet" hidden></main>
   <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="Arr" aria-selected="true">Arrange</button>
+    <button role="tab" data-tab="Arr" aria-selected="true">Loop</button>
     <button role="tab" data-tab="Snd" aria-selected="false">Sounds</button>
     <button role="tab" data-tab="Set" aria-selected="false">Settings</button>
   </nav>
@@ -627,7 +629,7 @@ return {fft,Decim,Tracker,Catcher,onsets,transcribe,transcribeK,tidy,learnProf,k
    While you play, the TP-7 stands still and armed: the guitar then reaches the app over USB (8 Oct) and nothing records.
    Build 2 (8 Nov, your report of build 1): in edit mode, armed on line 1, you heard your guitar and the app heard it, but you did not
    hear the app. The stance is now normal mode, armed (record sources line 1, USB 1, USB 2), unless the diagnostics find otherwise. */
-const APP_BUILD='16 (26 Nov 2026)';
+const APP_BUILD='17 (28 Nov 2026)';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -640,7 +642,7 @@ const G=GDSP();
 
 // ------------------------------------------------------------------ settings and the session (audio itself lives in IndexedDB)
 const LS='tinebox-loop-1';
-function defaults(){ return {v:1,metroOn:true,lv:{metro:0.8,pads:0.9,loop:1,prev:0.8},kit:'studio',padFix:null,quant:0,
+function defaults(){ return {v:1,metroOn:false,b17:true,lv:{metro:0.8,pads:0.9,loop:1,prev:0.8},kit:'studio',padFix:null,quant:0,
   synth:{preset:'pad',oct:0,preview:true,snap:false,glide:true,level:0.8,add:'',room:true,prof:null,profN:0,low:40},printOnStop:true,autoAccept:true,mode:'capture',len:0,src:'gtr',sndPrev:true,
   // marker delay 79 ms and loop out −19 ms from Tinebox (5 Oct, 31 Oct); MIDI offset per audio setup (14 Oct: 10 ms at 48 kHz/1 ch, 4 ms at 96 kHz/6 ch)
   tp:{mDelay:79,loopAdj:-19,offsets:{'48 kHz, 1 ch':10,'96 kHz, 6 ch':4},rt:{},printFix:0,stance:'normal',lag:{}},diag:{},ses:null}; }
@@ -649,7 +651,10 @@ try{ const j=JSON.parse(localStorage.getItem(LS)||'null'); if(j&&j.v===1){ S=Obj
   // build 8: test 2 on 17 Nov found the TP-7 loop 14.7 ms short with the -19 ms loop-out correction; test 2 now learns it each run
   if(S.tp.loopAdj===-19&&!S.tp.loopLearnt) S.tp.loopAdj=-4.3;
   // build 11: every layer kept (switch 6 undoes), the TP-7 recording as you play
-  if(!j.b11){ S.autoAccept=true; S.mode='capture'; } S.b11=true; } }catch(e){}
+  if(!j.b11){ S.autoAccept=true; S.mode='capture'; } S.b11=true;
+  // build 17 (28 Nov): the six-switch looper: capture always, free loop length, metronome off unless you turn it on
+  if(!j.b17){ S.metroOn=false; } S.b17=true; } }catch(e){}
+S.mode='capture'; S.len=0; S.loopBars=false; S.autoAccept=true;
 // build 16: the input clipping shows in the log (26 Nov: the guitar peaked at 0 dBFS for 20 minutes, unnoticed)
 setInterval(()=>{ if(typeof IN!=='undefined'&&IN.pk>0.97&&performance.now()-(IN.clipT||0)>10000){ IN.clipT=performance.now(); log('st',`input clipping: peak ${(20*Math.log10(IN.pk)).toFixed(1)} dBFS, TP-7 gain ${S.tp.gain} dB`); toast('The input is clipping: run the level check in Diagnostics.'); } },1000);
 let saveT=null; function save(){ clearTimeout(saveT); saveT=setTimeout(saveNow,300); }
@@ -1100,7 +1105,7 @@ const hitsC=h=>h.map(x=>[Math.round(x.ph*1000)/1000,x.i,Math.round((x.v||0.9)*10
 // The last 150 ms still go into the take (cleanTake waits for them). Phone, 26 Nov: the repeat lost 24 to 38 ms of its start.
 function firstStart(S0,via){ E.rec={first:true,S0,via:via||null,hits:[]}; E.st='first'; E.play=null; prevSync(); capStart(via==='next'?'new section':'first loop');
   const fix=S.len?S.len*barS():0; E.capT=at(S0+(fix||CAP*barS())-(fix?0.15:0.3),()=>{ if(E.rec&&E.rec.first&&E.rec.S0===S0) firstClose(S0+(fix||CAP*barS())); });
-  say(S.len?`Recording ${S.len} bar${S.len>1?'s':''}: guitar, pads or both. It loops by itself.`:via==='next'?'Recording a new section: guitar, pads or both. Switch 1 closes it.':'Recording: guitar, pads or both. Switch 1 again closes the loop.',`Your guitar sounds as ${srcName()} (switch 5 swaps).`); renderAll(); }
+  say(S.len?`Recording ${S.len} bar${S.len>1?'s':''}: guitar, pads or both. It loops by itself.`:via==='next'?'Recording a new section: guitar, pads or both. Switch 1 closes it.':'Recording. Switch 1 again closes the loop.',`Your guitar sounds as ${srcName()} (switch 5 swaps).`); renderAll(); }
 async function firstClose(h,_c,stopAfter){ const r=E.rec; if(!r||!r.first) return; const bar=barS(), base=bpmNow(), raw=h-r.S0;
   if(raw<0.5*bar&&!stopAfter){ say('Too soon to close: tap again at the end of your loop.'); return; }
   clearTimeout(E.capT); const free=!S.loopBars, n=clamp(Math.round(raw/bar),1,CAP), L=free?Math.max(raw,0.25):n*bar, E1=r.S0+L, bpm=free?240*n/L:base;
@@ -1113,18 +1118,21 @@ async function firstClose(h,_c,stopAfter){ const r=E.rec; if(!r||!r.first) retur
   if(lg) sec.layers.push(lg); if(ld) sec.layers.push(ld); ses.secs.push(sec); ses.cur=k; if(k===0) ses.bpm=bpm; save();
   const moved=Math.abs(bpm-base)>=0.05, tTxt=moved?` Tempo ${bpmTxt(bpm)} bpm (was ${bpmTxt(base)}).`:'', what=[lg&&TNAME[lg.type].toLowerCase(),ld&&'drums'].filter(Boolean).join(' and ');
   log('st',`section ${sec.name}: ${n} bar${n>1?'s':''}, ${L.toFixed(3)} s, ${bpmTxt(bpm)} bpm (was ${bpmTxt(base)}), first pass: ${what} (${hits.length} hits, guitar peak ${dB(gpk)})`);
-  let P=null; if(!stopAfter){ P=E.play={k,z:E1,L,srcs:new Map()}; E.st='loop'; clkStart(E1,60/bpm); say(`Section ${sec.name}: ${n} bar${n>1?'s':''} of ${what}, looping.${tTxt}`,pendTxt()); }
+  // build 17: the first repeat starts as soon as it can and the loop moves with it, so nothing of its start is cut (phone, 26 Nov:
+  // the repeat lost 24 to 45 ms of the loop's first beat). The metronome restarts from there too.
+  let P=null, Z=E1; if(!stopAfter){ Z=Math.max(E1,ctx.currentTime+0.006); if(Z>E1+0.0005) log('st',`first repeat ${((Z-E1)*1000).toFixed(1)} ms after the close: the loop moves, nothing cut`);
+    P=E.play={k,z:Z,L,srcs:new Map()}; E.st='loop'; clkStart(Z,60/bpm); say(`Looping: ${L.toFixed(2)} s of ${what}.`,'Switch 1 overdubs, 2 stops.'); }
   else if(moved) say(null,tTxt.trim());
   renderAll(); const jobs=[];
   if(ld){ // the hits from your press on (up to 50 ms early counts as on it), snapped (if set) to this section's tempo
     const q=S.quant?240/bpm/S.quant*4:0, dh=hits.map(x=>{ let ph=Math.max(0,x.t-r.S0); if(q) ph=(Math.round(ph/q)*q)%L; return {ph,i:x.i,v:x.v}; }).filter(x=>x.ph<L&&x.ph>=0);
-    ld.hits=hitsC(dh); jobs.push(renderDrums(dh,L).then(y=>{ E.bufs.set(ld.id,mkBuf(y,N)); storeLayer(ld,y,sr); if(P&&E.play===P) layerPlay(P,ld,E1); renderAll(); })); }
+    ld.hits=hitsC(dh); jobs.push(renderDrums(dh,L).then(y=>{ E.bufs.set(ld.id,mkBuf(y,N)); storeLayer(ld,y,sr); if(P&&E.play===P) layerPlay(P,ld,Z); renderAll(); })); }
   if(lg) jobs.push((async()=>{ // round 1 plays what is in at once, the rest of round 1 once it is in; from round 2 one looping source
-    if(P&&x0){ const x=x0.slice(); fadeEdge(x,sr,0.0015,0); layerOnce(P,lg.id,mkBuf(x,N),0,a-r.S0,E1); }
+    if(P&&x0){ const x=x0.slice(); fadeEdge(x,sr,0.0015,0); layerOnce(P,lg.id,mkBuf(x,N),0,a-r.S0,Z); }
     await sleepTo(takeReadyAt(E1)+0.005); let x=cleanTake(r.S0,E1); if(!x){ log('err','the first pass did not reach the app'); x=new Float32Array(N); }
     fadeEdge(x,sr,0.0015,0.0015); const y=new Float32Array(N); y.set(x.subarray(0,N)); const buf=mkBuf(y,N); E.bufs.set(lg.id,buf);
     if(gt==='syn'){ E.raws.set(lg.id,{x:y,off:0,N}); IDB.put(S.ses.id+':'+lg.id+':raw',{x:y,off:0,N,sr}); } storeLayer(lg,y,sr); postCheck(lg,r.S0,E1,r.S0);
-    if(P&&E.play===P){ if(a<E1) layerOnce(P,lg.id,buf,Math.max(0,a-r.S0),L,E1); layerPlay(P,lg,E1+L); }
+    if(P&&E.play===P){ if(a<E1) layerOnce(P,lg.id,buf,Math.max(0,a-r.S0),L,Z); layerPlay(P,lg,Z+L); }
     if(gt==='syn') synthLayer(lg,k); renderAll(); })());
   await Promise.all(jobs); save();
   if(stopAfter) say(`Section ${sec.name}: ${n} bar${n>1?'s':''} of ${what}. Stopped.${tTxt}`,pendTxt()); }
@@ -1207,7 +1215,7 @@ async function layerStop(h,quiet){ const r=E.rec; if(!r||r.first) return; E.rec=
     if(gt==='syn'){ E.raws.set(lg.id,{x,off,N}); IDB.put(S.ses.id+':'+lg.id+':raw',{x,off,N,sr}); }
     E.bufs.set(lg.id,mkBuf(y,N)); storeLayer(lg,y,sr); postCheck(lg,r.h0-pre,h,null); if(E.play&&E.play.k===r.k) layerPlay(E.play,lg,ctx.currentTime+0.02); if(gt==='syn') synthLayer(lg,r.k); return lg; })());
   const out=(await Promise.all(jobs)).filter(Boolean); save(); log('st',`layer on ${sec.name}: ${(h-r.h0).toFixed(2)} s, ${out.map(l=>TNAME[l.type]).join(' and ')||'nothing'} (${hits.length} hits)`);
-  if(!quiet) say(out.length?`${out.map(l=>TNAME[l.type]).join(' and ')} layer${out.length>1?'s':''} added: switch 6 keeps, double-tap 6 drops.`:'Nothing came in: nothing kept.',pendTxt()); renderAll(); }
+  if(!quiet) say(out.length?`${out.map(l=>TNAME[l.type]).join(' and ')} layer${out.length>1?'s':''} added.`:'Nothing came in: nothing kept.',pendTxt()); renderAll(); }
 
 // ------------------------------------------------------------------ synth layers: rendered from the guitar take in a worker
 // The raw take plays until the synth is ready (a second or a few), then the synth takes over at once.
@@ -1457,7 +1465,9 @@ function tapeSecAt(pos){ const ses=S.ses; if(!ses) return -1; const t=pos/1000; 
 // Build 5 layout: 1 record or close a loop, whatever you play (guitar, pads or both), 2 play/stop, 3 previous section, 4 next section
 // (from the last one: a new section), 5 the guitar's sound: raw or the synth chosen in Sounds, 6 keep the newest pass (tap) or drop it
 // (double tap); with nothing to keep, four taps of 6 start a new session.
-const SW_ACT=['rec','play','prev','next','src','six'];
+// build 17 (28 Nov): one job per switch, single taps only (Boss RC-1 cycles record, overdub and play on one pedal and needs double
+// presses and holds; the AirTurn has six switches and no holds in keyboard mode, so each job gets its own switch and nothing waits)
+const SW_ACT=['rec','play','undo','redo','clear','keep'], SW_NAME=['Record / overdub','Play / stop','Undo','Redo','Clear','Keep what I just played'];
 async function act(a,ev,hh){ initAudio(); if(!ctx) return; if(ctx.state!=='running') try{ await ctx.resume(); }catch(e){}
   const h=hh!=null?hh:p2h(evT(ev)); E.pressT=ev?evT(ev):performance.now(); log('do',`${a} (${E.st}${E.rec?', recording':''})`); requestWake();
   try{ await act2(a,h); }catch(err){ log('err',`${a}: ${err&&err.stack||err}`); say('Error: '+(err&&err.message||err)); } renderAll(); }
@@ -1466,15 +1476,19 @@ async function act2(a,h){ const st=E.st, ses=S.ses;
     if(st==='prep'){ say('Getting the TP-7 ready: press once the metronome runs.'); return; }
     if(st==='printing'){ E.printStop=true; E.after={play:true,rec:true}; say('Recording after this print pass…'); return; }
     if(st==='tape'){ await tapeStop(); return playFrom(ses.cur||0,{rec:true}); }
-    if(st==='idle') return prepSession(ses?ses.bpm:(TAP.bpm||100));
-    if(st==='ready'){ printCancelSoon(); await openInput(); if(!CLK.on) clkStart(clkFirst()); return firstStart(S.loopBars?clkNear(h):h); }
-    if(st==='first'){ if(E.rec){ if(await retro(h)) return; return firstClose(h); } return; }
-    if(st==='loop'){ if(E.next){ say('Changing section: record once it starts.'); return; } if(E.rec){ if(await retro(h)) return; return layerStop(h); } return layerStart(h); }
+    if(st==='idle'){ await ensureSession(); if(E.st!=='ready') return; await openInput(); return firstStart(ctx.currentTime); }
+    if(st==='ready'){ printCancelSoon(); await openInput(); if(!CLK.on) clkStart(clkFirst()); return firstStart(S.metroOn?clkNear(h):h); }
+    if(st==='first'){ if(E.rec) return firstClose(h); return; }
+    if(st==='loop'){ if(E.rec) return layerStop(h); return layerStart(h); }
     if(st==='stopped'){ printCancelSoon(); return playFrom(ses.cur||0,{rec:true}); }
     return; }
   if(a==='src'){ S.src=S.src==='syn'?'gtr':'syn'; save(); prevSync(); say(`Your guitar sounds as ${srcName()}.`,E.rec?'The layer being recorded becomes that when you close it.':'Switch 5 swaps it back.'); return; }
+  if(a==='undo') return undoNow();
+  if(a==='redo'){ if(E.rec){ say('Recording: switch 1 closes it first.'); return; } return peelRedo(); }
+  if(a==='clear') return clearNow();
+  if(a==='keep') return keepNow(h);
   if(a==='play'){
-    if(st==='ready'){ S.metroOn=!S.metroOn; save(); if(S.metroOn&&!CLK.on) clkStart(clkFirst()); say(`Metronome ${S.metroOn?'on':'off'}.`); return; }
+    if(st==='ready'||st==='idle'){ say('Nothing to play yet.','Switch 1 records a loop.'); return; }
     if(st==='first'||st==='loop') return stopAll(false,h);
     if(st==='stopped'){ printCancelSoon(); return playFrom(ses.cur||0); }
     if(st==='printing'){ E.printStop=true; E.after={play:true}; say('Playing after this print pass…'); return; }
@@ -1487,6 +1501,31 @@ async function act2(a,h){ const st=E.st, ses=S.ses;
     return; }
   if(a==='keep') return acceptPass(newestPending());
   if(a==='drop') return dismissPass(newestPending()); }
+// build 17: switch 3, undo: a recording in progress is cancelled; otherwise the newest layer still playing goes quiet (switch 4 brings it back)
+function curSec(){ const ses=S.ses; if(!ses||!ses.secs.length) return null; return SEC(E.play?E.play.k:(ses.cur||0)); }
+function undoNow(){ const st=E.st;
+  if(st==='first'&&E.rec){ firstCancel(); if(E.cap&&!S.ses.secs.length) capStop(); return; }
+  if(E.rec){ E.rec=null; prevSync(); say('Overdub cancelled.'); renderAll(); return; }
+  const sec=curSec(); if(!sec){ say('Nothing to undo.'); return; } const l=sec.layers.filter(x=>x.state==='accepted'&&!x.muted).sort((a,b)=>(b.created||0)-(a.created||0))[0];
+  if(!l){ say('Nothing left to undo.','Switch 4 brings layers back.'); return; } l.muted=true; l.peeled=true; layerGain(l); (E.redo=E.redo||[]).push({id:l.id,k:S.ses.secs.indexOf(sec)}); save();
+  log('st',`undo: ${TNAME[l.type]} on ${sec.name}`); say(`Undone: the ${TNAME[l.type].toLowerCase()} layer.`,'Switch 4 brings it back.'); renderAll(); }
+// build 17: switch 5, clear: only while stopped, so nothing is wiped mid-song. The TP-7 files stay.
+async function clearNow(){ const st=E.st; if(['first','loop'].includes(st)){ say('Stop first (switch 2), then clear.'); return; }
+  if(!S.ses||!S.ses.secs.length){ say('Nothing to clear.','Switch 1 records a loop.'); return; }
+  await stopAll(true); S.ses.secs=[]; S.ses.cur=0; E.bufs.clear(); E.raws.clear(); E.redo=[]; E.st='ready'; save(); log('st','cleared');
+  say('Cleared.','Switch 1 records a new loop. The TP-7 recordings stay on the TP-7.'); renderAll(); }
+// build 17: switch 6, keep what I just played: while a loop plays, the last whole time round becomes a layer; before the first loop,
+// with the metronome on, the last 4 bars become the loop (the app holds the last 80 s of input)
+async function keepNow(h){ const st=E.st;
+  if(E.rec){ say('Recording: switch 1 closes it.'); return; }
+  if(st==='loop'&&E.play){ const P=E.play, c=P.z+Math.floor((h-P.z)/P.L)*P.L; if(c-P.L<P.z){ say('Nothing kept: no whole time round yet.'); return; }
+    log('st',`keep: the last time round (${(c-P.L).toFixed(2)} to ${c.toFixed(2)})`); E.rec={first:false,h0:c-P.L,k:P.k,z:P.z,L:P.L,hits:[],retro:true}; await layerStop(c); return; }
+  if(st==='ready'){ if(!S.metroOn||!CLK.on||CLK.z0==null){ say('Keep needs a loop playing, or the metronome on.','Turn the metronome on, play along, then switch 6.'); return; }
+    const bar=barS(), n=4, e1=CLK.z0+Math.floor((h+0.12-CLK.z0)/bar)*bar, s0=e1-n*bar; if(!IN.ring||s0<IN.w/IN.sr-80||s0<CLK.z0-0.01){ say('Nothing kept: play 4 bars with the metronome first.'); return; }
+    log('st',`keep: the last ${n} bars (${(n*bar).toFixed(2)} s) to ${e1.toFixed(2)}`); capStart('keep'); E.rec={first:true,S0:s0,via:'retro',hits:[]}; E.st='first'; E.play=null; await firstClose(e1); return; }
+  say(st==='stopped'?'Keep works while a loop plays.':'Nothing to keep yet.'); }
+// build 17: one session at a time, made as soon as the TP-7 answers, so the first press records at once
+function ensureSession(){ if(E.st!=='idle') return Promise.resolve(); if(!E.prepP) E.prepP=prepSession(S.ses?S.ses.bpm:100).finally(()=>{ E.prepP=null; }); return E.prepP.then(()=>waitFor(()=>E.st!=='prep',15000)); }
 // switch 6: with a pass to keep or drop, a tap keeps it and a double tap (within 0.35 s) drops it; otherwise tap tempo
 const SIX={n:0,t:null};
 // build 11: while looping, with nothing to keep or drop: a tap undoes the newest layer, two taps bring it back; a tap while recording
@@ -1536,7 +1575,8 @@ function sw(i,ev,src){ log('in',`switch ${i+1}${src==='key'?'':' (screen)'}`);
   if(PED.onPress) PED.onPress(i);
   if(PADCAL.on&&PADCAL.sw){ if(i===0){ PADCAL.hits.push(p2h(evT(ev))); if(PADCAL.hits.length>=PADCAL.n) padCalDone(); else renderAll(); } return; }
   if(LOADT.on){ if(i===3) loadPress(ev); return; }
-  if(PED.gate&&!PED.gate(i,ev)) return; if(i===5) return six(ev); act(SW_ACT[i],ev); }
+  if(PED.gate&&!PED.gate(i,ev)) return; act(SW_ACT[i],ev); }
+document.addEventListener('click',e=>{ const b=e.target.closest&&e.target.closest('[data-sw]'); if(!b) return; sw(+b.dataset.sw,e,'screen'); });
 function swFlash(i,on){ const b=document.querySelector(`[data-sw="${i}"]`); if(b) b.classList.toggle('flash',!!on); }
 async function requestWake(){ try{ if('wakeLock' in navigator&&!E.wake) E.wake=await navigator.wakeLock.request('screen'); }catch(e){} }
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'){ E.wake=null; if(S.ses) requestWake(); if(ctx&&ctx.state!=='running') ctx.resume().catch(()=>{}); } });
@@ -1555,12 +1595,12 @@ function posTxt(){ if(!ctx) return '–'; const now=ctx.currentTime, b=beatS();
   if(E.st==='tape'&&TP.pos!=null){ const s=TP.pos/1000; return `${Math.floor(s/60)}:${(s%60).toFixed(1).padStart(4,'0')}`; }
   if(CLK.on&&E.st==='ready'){ const n=Math.floor((now-CLK.z0)/b); return n>=0?`·${(n%4+4)%4+1}`:'–'; }
   return '–'; }
-function renderScreen(){ const st=$('#scState'), sm=$('#scSmall'), ti=$('#scTitle'); if(!st) return; const tt=S.ses?`Session at ${bpmTxt(bpmNow())} BPM`:'Tinebox Loop'; if(ti.textContent!==tt) ti.textContent=tt;
+function renderScreen(){ const st=$('#scState'), sm=$('#scSmall'), ti=$('#scTitle'); if(!st) return; const tt=S.ses&&S.metroOn?`Tinebox Loop · ${bpmTxt(bpmNow())} BPM`:'Tinebox Loop'; if(ti.textContent!==tt) ti.textContent=tt;
   st.textContent=E.msg||''; sm.textContent=E.small||'';
   const ch=[]; if(!midiReady()) ch.push('<span class="chip bad">no TP-7</span>'); else if(!TP.info) ch.push('<span class="chip bad">TP-7: no reply yet</span>');
   ch.push(`<span class="chip ${S.src==='syn'?'on':''}">guitar: ${S.src==='syn'?esc(srcName()):'raw'}</span>`);
   const p=pending().length; if(p) ch.push(`<span class="chip bad">${p} to keep or drop</span>`);
-  const q=toPrint().length; if(q) ch.push(`<span class="chip">${q} to print</span>`);
+  const q=S.mode!=='arrange'?0:toPrint().length; if(q) ch.push(`<span class="chip">${q} to print</span>`);
   if(IN.stream) ch.push(`<span class="chip ${IN.pk>0.003?'on':''}">in ${IN.pk>3e-5?Math.round(20*Math.log10(IN.pk))+' dB':'silent'}</span>`);
   // build 14: an armed TP-7 records on its own Play
   if(!E.cap&&TP.arm&&TP.arm.v===1&&!DG.run) ch.push(`<span class="chip">TP-7 armed: its ▶ records</span>`);
@@ -1574,7 +1614,7 @@ setInterval(()=>{ const p=$('#scPos'); if(!p) return; const t=posTxt(); if(p.tex
   if(E.tab==='Arr'){ const ts=trState(); if(ts!==E.trShown) renderTransport(); }
   renderScreen(); },60);
 function ciShow(n){ let el=$('#countBig'); if(!el){ if(!n) return; el=document.createElement('div'); el.id='countBig'; el.className='count-big'; el.setAttribute('aria-hidden','true'); document.body.appendChild(el); } if(el.textContent!==n) el.textContent=n; el.hidden=!n; }
-function layerRow(l,k){ const st=l._busy?'processing…':l._rendering?'rendering the synth…':l.printed?'on the TP-7':l.state==='pending'?'keep or drop?':'kept · prints when you stop';
+function layerRow(l,k){ const st=l._busy?'processing…':l._rendering?'rendering the synth…':l.printed?'on the TP-7':l.state==='pending'?'keep or drop?':S.mode!=='arrange'?(l.muted?'undone':'playing'):'kept · prints when you stop';
   const cls=l.state==='pending'?'pend':l.printed?'tape':'';
   const opts=l.type==='syn'&&!l.printed?`<div class="lopt"><select data-lset="preset" data-id="${l.id}" data-k="${k}" aria-label="Synth sound">${Object.entries(G.PRESETS).map(([v,p])=>`<option value="${v}"${l.preset===v?' selected':''}>${p.name}</option>`).join('')}</select>
     <select data-lset="oct" data-id="${l.id}" data-k="${k}" aria-label="Octave">${[-2,-1,0,1,2].map(o=>`<option value="${o}"${(l.oct||0)===o?' selected':''}>${o>0?'+':''}${o} oct</option>`).join('')}</select>
@@ -1591,18 +1631,15 @@ const PADC=['#7BC99A','#6E9BF2','#E8796B','#F2C14E','#F7DA8B','#9AD3E0'];
 const ICO={prev:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg>',next:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg>',
   play:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16l13-8z"/></svg>',stop:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>',
   loop:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>'};
-function renderArr(){ const el=$('#pArr'); if(!el) return;
-  if(!el.firstChild){ el.innerHTML=`<div class="tl" id="tl"><div class="tlsc" id="tlsc"><canvas id="tlc" aria-label="Sections and layers" role="img"></canvas></div><div class="tlempty" id="tlEmpty" hidden></div></div>
-    <div class="tr" id="tr"><div class="seg" role="group" aria-label="Play from"><button type="button" data-act="tMode" data-m="app">App</button><button type="button" data-act="tMode" data-m="tape">TP-7</button></div><span class="sp"></span>
-      <button type="button" class="tbtn" data-act="tPrev" aria-label="Previous section">${ICO.prev}</button><button type="button" class="tbtn big" data-act="tPlay" aria-label="Play">${ICO.play}</button><button type="button" class="tbtn" data-act="tNext" aria-label="Next section">${ICO.next}</button><span class="sp"></span>
-      <button type="button" class="tbtn" data-act="tLoop" aria-label="Loop the section on the TP-7">${ICO.loop}</button></div>`;
-    const sc=$('#tlsc'); new ResizeObserver(()=>tlKick()).observe($('#tl'));
-    sc.addEventListener('pointerdown',e=>{ TL.down={x:e.clientX,y:e.clientY,sl:sc.scrollLeft}; });
-    sc.addEventListener('pointerup',e=>{ const d=TL.down; TL.down=null; if(!d||Math.abs(e.clientX-d.x)>8||Math.abs(e.clientY-d.y)>8||Math.abs(sc.scrollLeft-d.sl)>8) return; const r=$('#tlc').getBoundingClientRect(); tlTap(e.clientX-r.left,e.clientY-r.top); }); }
-  const em=$('#tlEmpty'), ses=S.ses; let h='';
-  if(!ses) h=`<div><b>No session yet.</b></div><div>1. Settings: Connect the TP-7 and allow MIDI and the microphone.<br>2. On the TP-7: record sources line 1, USB 1 and USB 2; MIDI setting cue; auto start and count-in off.<br>3. Tap switch 6 four times at your tempo.</div><button type="button" class="btn pri" data-act="newSes">New session at ${Math.round(TAP.bpm||100)} bpm</button>`;
-  else if(!ses.secs.length&&E.st!=='first') h=E.st==='prep'?'<div>Getting the TP-7 ready…</div>':`<div><b>Switch 1</b> starts a loop the moment you press it: play guitar, tap the pads in Sounds, or both. <b>Switch 1</b> again closes it, and it plays straight away.</div><div>Your guitar sounds as ${esc(srcName())}; <b>switch 5</b> swaps raw and synth.</div>`;
-  if(em.innerHTML!==h) em.innerHTML=h; em.hidden=!h; renderTransport(); tlKick(); }
+// build 17: the Loop screen: what the looper is doing, the layers, and the six switches (also tappable)
+function renderArr(){ const el=$('#pArr'); if(!el) return; const sec=curSec(), layers=sec?sec.layers:[], on=layers.filter(l=>!l.muted&&l.state==='accepted').length;
+  const st=E.st==='idle'?(midiReady()?'Tap switch 1 to start':'Connect the TP-7 (Settings)'):E.st==='prep'?'Getting the TP-7 ready…':E.st==='ready'?'Ready: switch 1 records':E.st==='first'?'Recording the loop':E.st==='loop'?(E.rec?'Overdubbing':'Playing'):E.st==='stopped'?'Stopped':E.st;
+  const h=`<div class="card"><div class="bigst ${E.rec||E.st==='first'?'rec':E.st==='loop'?'on':''}">${esc(st)}</div>
+    <p class="note">${sec?`Loop ${sec.L.toFixed(2)} s, ${on} of ${layers.length} layer${layers.length===1?'':'s'} playing`:'No loop yet.'}${E.cap?' · the TP-7 is recording':''}</p>
+    <div class="row"><button type="button" class="btn sm" data-tog="metroOn" aria-pressed="${!!S.metroOn}">Metronome ${S.metroOn?'on':'off'}</button><button type="button" class="btn sm" data-tab="Snd">Sound: ${esc(S.src==='syn'?srcName():'raw guitar')}</button></div></div>
+  ${layers.length?`<div class="card"><h3>Layers</h3>${layers.slice().reverse().map(l=>layerRow(l,S.ses.secs.indexOf(sec))).join('')}</div>`:''}
+  <div class="card"><h3>Footswitch</h3><div class="sw6">${SW_NAME.map((n,i)=>`<button type="button" class="btn swb" data-sw="${i}"><b>${i+1}</b> ${n}</button>`).join('')}</div></div>`;
+  if(h!==E.arrH){ el.innerHTML=h; E.arrH=h; } }
 const trState=()=>[E.st,E.tmode||'app',!!E.tloop,S.ses?S.ses.cur:-1,S.ses?S.ses.secs.length:0].join('|');
 function renderTransport(){ const tr=$('#tr'); if(!tr) return; E.trShown=trState(); const tape=E.tmode==='tape', ses=S.ses, n=ses?ses.secs.length:0, cur=ses?ses.cur||0:0;
   tr.querySelectorAll('[data-act="tMode"]').forEach(b=>b.setAttribute('aria-pressed',String((b.dataset.m==='tape')===tape)));
@@ -1617,7 +1654,7 @@ function tlLayout(){ const ses=S.ses, W=TL.W, H=TL.H; if(!ses) return null; cons
   const rec=recFirst?{x,w:Math.max(40,recT*pxs)}:null; if(rec) x+=rec.w; const plus={x,w:plusW}; x+=plusW;
   const lh=H-head-6, lanes=[{t:'gtr',y:head+2,h:lh*0.3},{t:'syn',y:head+2+lh*0.3,h:lh*0.3},{t:'drm',y:head+2+lh*0.6,h:lh*0.4}];
   return {cols,rec,plus,lanes,head,g,cw:Math.max(W,x+4)}; }
-function tlKick(){ if(TL.raf) return; TL.raf=requestAnimationFrame(tlFrame); }
+function tlKick(){ if(!$('#tlc')) return; if(TL.raf) return; TL.raf=requestAnimationFrame(tlFrame); }
 function tlFrame(t){ TL.raf=0; if(E.tab!=='Arr'||document.hidden) return; const live=['loop','first','tape'].includes(E.st)||!!E.next;
   if(!live||t-TL.last>30){ TL.last=t; tlDraw(); } if(live) TL.raf=requestAnimationFrame(tlFrame); }
 function tlDraw(){ const tl=$('#tl'), cv=$('#tlc'); if(!tl||!cv) return; const dpr=window.devicePixelRatio||1; TL.W=tl.clientWidth; TL.H=tl.clientHeight;
@@ -1720,10 +1757,9 @@ function renderSet(){ const el=$('#pSet'); if(!el) return; const info=TP.info;
     ${info?`<p class="note">${esc(info.product||'')} ${esc(info.sw_version||'')}</p>`:''}<p class="note">Audio: ${ctx?`${ctx.sampleRate} Hz, ${ctx.destination.maxChannelCount} output channel${ctx.destination.maxChannelCount>1?'s':''}, input ${IN.kind||'closed'}`:'not started'}. Round trip: ${S.ses&&S.ses.rt!=null?msTxt(S.ses.rt):'measured at each new session'}.</p>
     <p class="note">While you play, the TP-7 stands in ${stName(S.tp.stance)}${S.tp.stance==='normal'?' (pressing play on the TP-7 then would start a new recording)':''}. Diagnostics test 1 checks which stance lets you hear both your guitar and the app.</p></div>
   <div class="card"><h3>Capture</h3>
-    <div class="row"><span class="lbl">The TP-7 records</span><select data-set="mode" aria-label="When the TP-7 records"><option value="capture"${capOn()?' selected':''}>as you play</option><option value="arrange"${!capOn()?' selected':''}>the arrangement, when you stop</option></select></div>
-    <div class="row"><span class="lbl">Loop length</span><select data-set="len" aria-label="Loop length">${[[0,'free: switch 1 closes it'],[1,'1 bar'],[2,'2 bars'],[4,'4 bars'],[8,'8 bars']].map(([v,n])=>`<option value="${v}"${(S.len||0)===v?' selected':''}>${n}</option>`).join('')}</select></div>
+
     <p class="note">${capOn()?'As you play: the TP-7 records from your first loop or Play until you stop, one recording per play-through. Track 1 your guitar, 2 what you hear, 3 the loops and pads without the metronome. Nothing to print or wait for.':'The arrangement: each section goes to the TP-7 in its own place when you stop (section by section, track by track), so the TP-7 can play from any section.'}</p>
-    <p class="note">Switches: 1 records (twice quickly keeps what you just played), 2 play/stop, 3 and 4 sections, 5 raw/synth, 6 undoes the newest layer (twice: brings it back; four taps when stopped: a new session).</p></div>
+    <p class="note">Switches: 1 record / overdub, 2 play / stop, 3 undo, 4 redo, 5 clear (while stopped), 6 keep what you just played.</p></div>
   <div class="card"><h3>Guitar input (TP-7 line 1)</h3><div class="row"><span class="lbl">Input gain: ${S.tp.gain!=null?S.tp.gain+' dB':'as set on the TP-7'}</span><button type="button" class="btn sm" data-act="gainDn" aria-label="Gain down 3 dB">−</button><button type="button" class="btn sm" data-act="gainUp" aria-label="Gain up 3 dB">+</button></div>
     <div class="row"><button type="button" class="btn sm" data-act="gainAuto" ${E.lvl?'disabled':''}>${E.lvl?'Listening…':'Set from my playing'}</button></div>
     <p class="note">A guitar plugged straight into the TP-7 is quiet (near −30 dBFS on 17 Nov). The app sets the TP-7's input gain (0 to 42 dB) over MIDI; aim for peaks near −12 dBFS. The TP-7 lets you hear your guitar at that level too.</p></div>
@@ -1736,7 +1772,7 @@ function renderSet(){ const el=$('#pSet'); if(!el) return; const info=TP.info;
   <div class="card"><h3>Layers</h3><div class="row"><span class="lbl">Print kept layers when you stop</span><button type="button" class="btn sm" data-tog="printOnStop" aria-pressed="${!!S.printOnStop}">${S.printOnStop?'On':'Off'}</button></div>
     <div class="row"><span class="lbl">Keep every new layer without asking</span><button type="button" class="btn sm" data-tog="autoAccept" aria-pressed="${!!S.autoAccept}">${S.autoAccept?'On':'Off'}</button></div>
     <div class="row"><button type="button" class="btn" data-act="printNow">Print kept layers now${toPrint().length?` (${toPrint().length})`:''}</button><button type="button" class="btn" data-act="tapeStop">Stop the TP-7</button></div></div>
-  <div class="card"><h3>Footswitch</h3><p class="note">AirTurn in mode 2 (keyboard): 1 record a loop, whatever you play (guitar, pads or both; tap on, tap off; it also closes a new section), 2 play/stop (in the first half bar of a first pass it cancels it), 3 previous section, 4 next section (at the end of this time round; from the last one it records a new section), 5 your guitar's sound: raw or the synth chosen in Sounds, 6 keep the newest pass, double tap 6 to drop it. With nothing to keep, four steady taps of 6 start a new session at that tempo.</p></div>
+  <div class="card"><h3>Footswitch</h3><p class="note">AirTurn in mode 2 (keyboard). One job per switch, single taps: 1 record, and while a loop plays start or stop an overdub; 2 play or stop (each play-through is one TP-7 recording); 3 undo the newest layer, or cancel a recording; 4 redo; 5 clear the loop (only while stopped; the TP-7 files stay); 6 keep what you just played as a layer (before the first loop: the last 4 bars, with the metronome on).</p></div>
   <div class="card"><h3>Tests and log</h3><div class="row"><button type="button" class="btn pri" data-act="diag">Diagnostics</button><button type="button" class="btn" data-act="copyLog">Copy log</button><button type="button" class="btn" data-act="shareLog">Share log</button></div>
     <p class="note">Build ${APP_BUILD}.</p><div class="row"><button type="button" class="btn sm" data-act="endSes">End this session</button></div></div>`; }
 
@@ -1774,7 +1810,7 @@ document.addEventListener('click',async e=>{ const t=e.target.closest&&e.target.
   if(a==='printNow'){ if(E.st==='loop'||E.st==='first') await stopAll(true); return printAll(); }
   if(a==='diag') return diagOpen();
   if(a==='copyLog') return copyText(logText(),'Log');
-  if(a==='endSes'){ if(!confirmTap(t,'Tap again to end the session (the TP-7 recording stays).')) return; await stopAll(true); S.ses=null; E.bufs.clear(); E.raws.clear(); E.st='idle'; save(); say('Session ended.','Tap switch 6 four times for a new one.'); renderAll(); return; } });
+  if(a==='endSes'){ if(!confirmTap(t,'Tap again to end the session (the TP-7 recording stays).')) return; await stopAll(true); S.ses=null; E.bufs.clear(); E.raws.clear(); E.st='idle'; save(); say('Session ended.','Switch 1 starts a new one.'); renderAll(); return; } });
 document.addEventListener('change',e=>{ const t=e.target;
   if(t.dataset.set){ const p=t.dataset.set.split('.'), v=/^-?\d+$/.test(t.value)?+t.value:t.value; if(p.length>1) S[p[0]][p[1]]=v; else S[p[0]]=v; save(); prevSync(); renderAll(); return; }
   if(t.dataset.lset){ const k=+t.dataset.k, sec=SEC(k), l=sec&&sec.layers.find(x=>x.id===t.dataset.id); if(!l) return; l[t.dataset.lset]=t.dataset.lset==='oct'?+t.value:t.value; save(); synthLayer(l,k); renderAll(); } });
@@ -1805,13 +1841,13 @@ const TESTS=[
   {id:'t5',hidden:true,name:'5. The synth and your guitar',time:'about 2 minutes, your guitar',desc:'Build 7 has a new tracker after Guitarcatcher: every note gets its own level and pitch, every 5.3 ms. This teaches it your guitar (15 s of single notes), measures its own delay on your notes from the recording (so the round trip is not in it), plays you the synth version of 10 s of your chords, then lets you play the live synth. You say how each sounded. Build 8: it also measures the round trip before and after the live synth, to see whether the synth moves it.'},
   {id:'t6',hidden:true,name:'6. Capture: the TP-7 records as you play',time:'about 3 minutes, your guitar and footswitch',desc:'Build 11. Checks whether the TP-7 lets you hear USB 2, then a real capture session: a loop, a layer, undo and redo on switch 6, keeping what you just played with switch 1 twice, and stop. Then you play the new TP-7 recording and say what you hear. Build 14: the TP-7 is disarmed first, so its Play plays the take instead of recording a new one.'},
   {id:'t14',name:'1. Level and hearing check (run first)',time:'about 1 minute, your guitar',desc:'Build 16. The quiet input, the app\'s clicks coming back into the guitar input, whether you hear the clicks, and your loudest strum. Sets the TP-7 gain if the guitar clips or is too low. The other tests mean little until this passes.'},
-  {id:'t6p',name:'2. Capture take: TP-7 playback (plan test 6)',time:'about 1 minute (3 if there is no take yet), the TP-7',desc:'Build 13 left the TP-7 armed, so its Play recorded a new file instead of playing the take. Build 16: the app disarms the TP-7, plays the take itself and listens to it; you say what you hear. The rest of test 6 passed on 26 Nov.'},
-  {id:'t7',name:'3. First repeat cut (plan test 1)',time:'about 5 minutes, your guitar and footswitch',desc:'20 first loops: 10 in free length, 10 of 2 bars. Measures how far into the loop the first repeat starts. Pass: median 10 ms or less, none over 20 ms. The TP-7 does not record.'},
-  {id:'t8',name:'4. Footswitch timing against the click (plan test 2)',time:'about 5 minutes, pads and footswitch',desc:'3 runs of 8 pad taps (your baseline), then 3 runs of 16 presses of switch 1, each on the clicks. Pass: the footswitch median steady within ±5 ms, its SD at most 5 ms above the pads, at most 1 of 48 presses over 50 ms off. Your pad timing setting is kept as it was.'},
-  {id:'t9',name:'5. Press timing under load (plan test 3)',time:'about 1 minute, footswitch',desc:'The app keeps itself busy 200 ms in every 600 ms while you press switch 4 ten times. Pass: presses that land in a busy spell keep their own time.'},
+  {id:'t6p',hidden:true,name:'2. Capture take: TP-7 playback (plan test 6)',time:'about 1 minute (3 if there is no take yet), the TP-7',desc:'Build 13 left the TP-7 armed, so its Play recorded a new file instead of playing the take. Build 16: the app disarms the TP-7, plays the take itself and listens to it; you say what you hear. The rest of test 6 passed on 26 Nov.'},
+  {id:'t7',hidden:true,name:'3. First repeat cut (plan test 1)',time:'about 5 minutes, your guitar and footswitch',desc:'20 first loops: 10 in free length, 10 of 2 bars. Measures how far into the loop the first repeat starts. Pass: median 10 ms or less, none over 20 ms. The TP-7 does not record.'},
+  {id:'t8',hidden:true,name:'4. Footswitch timing against the click (plan test 2)',time:'about 5 minutes, pads and footswitch',desc:'3 runs of 8 pad taps (your baseline), then 3 runs of 16 presses of switch 1, each on the clicks. Pass: the footswitch median steady within ±5 ms, its SD at most 5 ms above the pads, at most 1 of 48 presses over 50 ms off. Your pad timing setting is kept as it was.'},
+  {id:'t9',hidden:true,name:'5. Press timing under load (plan test 3)',time:'about 1 minute, footswitch',desc:'The app keeps itself busy 200 ms in every 600 ms while you press switch 4 ten times. Pass: presses that land in a busy spell keep their own time.'},
   {id:'t10',hidden:true,name:'10. TP-7 file head (plan test 4)',time:'about 3 minutes, your guitar and footswitch',desc:'10 takes: switch 1 and strum at once, play about 8 s, switch 2. Compares each TP-7 file with the time from your press to Stop. Pass: 10 of 10 files cover it minus 10 ms or less. Makes 10 files on the TP-7 to delete by hand.'},
   {id:'t11',hidden:true,name:'5. Layers in time as the round trip moves (plan test 7)',time:'10 minutes, your guitar and footswitch',desc:'One loop runs 10 minutes; you record a layer of muted strums each minute. The live synth runs from 3 to 6 minutes. Logs the round trip every 10 s and each layer against the metronome echo. The TP-7 does not record.'},
-  {id:'t15',name:'6. Live synth: alone and with the metronome',time:'about 1 minute, your guitar',desc:'Build 16. 10 s of chords with the app silent, then the same with the metronome running. Compares how many attacks the synth voices and how it sounded to you: does the app\'s own sound in the input spoil it?'},
+  {id:'t15',hidden:true,name:'6. Live synth: alone and with the metronome',time:'about 1 minute, your guitar',desc:'Build 16. 10 s of chords with the app silent, then the same with the metronome running. Compares how many attacks the synth voices and how it sounded to you: does the app\'s own sound in the input spoil it?'},
   {id:'t12',hidden:true,name:'12. Double-tap windows (plan test 8)',time:'about 8 minutes, footswitch',desc:'20 tries each of: switch 6 once, switch 6 twice, switch 1 twice, switch 6 four times. The app only listens and sorts each try by its own windows (350 ms, 400 ms, four even taps). Pass: 19 of 20 for each.'},
   {id:'t13',hidden:true,name:'6. Long session (plan test 9)',time:'30 minutes, your guitar and footswitch',desc:'Play normally for 15 minutes, counting your presses, then 5 and 10 minutes idle with a press after each. Checks missed and double presses, ignored bounces and the screen wake lock.'}
 ];
@@ -2084,11 +2120,11 @@ function diagReport(){ const L=[`Tinebox Loop diagnostics, ${new Date().toLocale
   log('app',`page loaded ${new Date().toLocaleString()}, build ${APP_BUILD}`);
   if(S.ses){ S.ses.secs.forEach(s=>s.layers.forEach(l=>{ delete l._busy; delete l._rendering; })); E.st=S.ses.secs.length?'stopped':'idle';
     say(S.ses.secs.length?`Session at ${bpmTxt(S.ses.bpm)} bpm, ${S.ses.secs.length} section${S.ses.secs.length>1?'s':''}.`:'Tinebox Loop',S.ses.secs.length?'Connect the TP-7 (Settings), then switch 2 plays. '+pendTxt():'Connect the TP-7 (Settings), then tap switch 6 four times for a session.'); }
-  else say('Tinebox Loop','Connect the TP-7 (Settings), then tap switch 6 four times for a session.');
+  else say('Tinebox Loop','Connect the TP-7 by USB-C, then tap the screen or switch 1.');
   showTab('Arr');
   // MIDI browsers grant access without a prompt: connect at once (a tap is still needed for audio)
   if(navigator.requestMIDIAccess) setTimeout(()=>{ midiConnect().then(ok=>{ if(ok&&midiReady()&&R.sysex) sxAlive().then(m=>{ if(m) setMidiNote(`TP-7 answers (${m} mode).`); renderAll(); }); }); },300);
-  const unlock=()=>{ initAudio(); document.removeEventListener('pointerdown',unlock,true); document.removeEventListener('keydown',unlock,true); };
+  const unlock=e=>{ initAudio(); if(!(e&&e.type==='keydown')) setTimeout(()=>{ if(E.st==='idle'&&midiReady()&&R.sysex) ensureSession(); },400); document.removeEventListener('pointerdown',unlock,true); document.removeEventListener('keydown',unlock,true); };
   document.addEventListener('pointerdown',unlock,true); document.addEventListener('keydown',unlock,true);
 })();
 

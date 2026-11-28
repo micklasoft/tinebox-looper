@@ -1,5 +1,27 @@
 # Tinebox-Looper
 
+## Build 17 (28 Nov 2026): the six-switch looper
+Rollback: build 16 is commit 4644117.
+
+One job per switch, single taps only (no double taps, no holds, nothing waits):
+| Switch | Job |
+|---|---|
+| 1 | Record. Closes the loop. While a loop plays: start or stop an overdub |
+| 2 | Play / stop. Each play-through is one TP-7 recording |
+| 3 | Undo the newest layer, or cancel a recording |
+| 4 | Redo |
+| 5 | Clear the loop (only while stopped; the TP-7 files stay) |
+| 6 | Keep what I just played: the last time round as a layer (before the first loop: the last 4 bars, metronome on) |
+
+- **First press records at once:** the app connects to the TP-7 and makes the session on its own (on the first tap of the screen, or on switch 1).
+- **First repeat:** starts as soon as it can and the loop moves with it, so no part of the loop's start is cut.
+- **Metronome off by default** (button on the Loop screen). Loop length is free; the loop sets it.
+- **Gone from the screen and the switches:** sections, tap tempo, fixed bar lengths, the arrangement and print mode, the raw/synth switch (the sound is chosen in Sounds), drum pads on the Loop screen, and all diagnostics but the level check. Their code stays for now.
+- **Loop screen:** what the looper is doing, the layers (mute, drop), the six switches, also tappable.
+- **Open:** with the metronome off, the app cannot follow the round trip from the metronome echo; on 26 Nov it crept from 79 to 139 ms over 12 minutes. Layers recorded late in a long session may sit late.
+
+Fake TP-7: `sim/run6.js` drives all six switches from a cold page (2 play-throughs, 2 files, no rule breaks, no page errors).
+
 ## Build 16 (26 Nov 2026)
 Rollback: build 15 is commit 994ea67.
 

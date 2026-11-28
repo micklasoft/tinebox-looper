@@ -1,0 +1,22 @@
+// build 17: the six switches by keyboard on the fake TP-7, from a cold page. node sim/run6.js $PWD/index.html
+const {chromium}=require('playwright'); const path=require('path');
+(async()=>{ const b=await chromium.launch({args:['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream','--autoplay-policy=no-user-gesture-required']});
+  const pg=await b.newPage(); const errs=[]; pg.on('pageerror',e=>errs.push(e.message));
+  await pg.addInitScript({path:path.join(__dirname,'fake.js')});
+  await pg.goto('file://'+process.argv[2]); await pg.waitForTimeout(2000);
+  const ev=(f,a)=>pg.evaluate(f,a), until=async(f,ms)=>{ const t=Date.now(); while(Date.now()-t<ms){ if(await ev(f)) return true; await pg.waitForTimeout(100); } return false; };
+  const K=['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter',' '], sw=async(i,w)=>{ await pg.keyboard.press(K[i-1]); await pg.waitForTimeout(w||300); };
+  const st=async n=>console.log(n.padEnd(28), await ev(()=>`${E.st}${E.rec?' +rec':''} | ${E.msg||''} | layers ${(curSec()&&curSec().layers.map(l=>l.muted?'m':'p').join(''))||'-'} | TP-7 files ${__tp.files.length}`));
+  await st('cold');
+  await sw(1,0); await until(()=>E.st==='first',15000); await st('sw1 from cold (records)');
+  await pg.waitForTimeout(2000); await sw(1,800); await st('sw1 closes loop');
+  await sw(1,1500); await sw(1,1200); await st('sw1 overdub on/off');
+  await sw(3,300); await st('sw3 undo');
+  await sw(4,300); await st('sw4 redo');
+  await pg.waitForTimeout(2600); await sw(6,1500); await st('sw6 keep last round');
+  await sw(5,300); await st('sw5 clear while playing');
+  await sw(2,800); await st('sw2 stop');
+  await sw(2,1500); await sw(2,800); await st('sw2 play then stop');
+  await sw(5,500); await st('sw5 clear while stopped');
+  const r=await ev(()=>({skip:LOG.filter(x=>/first repeat|repeat starts/.test(x[2])).map(x=>x[2]),viol:__tp.viol,files:__tp.files.map(f=>f.path.slice(-22)),screen:$('#pArr').innerText.slice(0,300)}));
+  console.log(r.skip.join('\n')); console.log('viol',r.viol,'files',r.files); console.log('--- screen\n'+r.screen); console.log('errors',errs); await b.close(); })();
